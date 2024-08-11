@@ -1,6 +1,6 @@
 %define name dua
-%define version 2.29.0
-%define release 4%{?dist}
+%define version 2.29.2
+%define release 1%{?dist}
 
 Summary:  View disk space usage and delete unwanted data, fast.
 Name:     %{name}
@@ -40,6 +40,7 @@ install -m 755 target/release/dua %{buildroot}/bin/
 /bin/dua
 
 %changelog
+* Sun Aug 11 2024 Danie de Jager - 2.29.2-1
 * Thu Jul 4 2024 Danie de Jager - 2.29.0-4
 * Sat May 11 2024 Danie de Jager - 2.29.0-3
 - Built with rustc 1.78.0
