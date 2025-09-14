@@ -1,14 +1,14 @@
 %define name dua
 %define version 2.31.0
-%define release 1%{?dist}
+%define release 2%{?dist}
 
-Summary:  View disk space usage and delete unwanted data, fast.
-Name:     %{name}
-Version:  %{version}
-Release:  %{release}
-License:  MIT License
-URL:      https://github.com/Byron/dua-cli
-Source0:  https://github.com/Byron/dua-cli/archive/refs/tags/v%{version}.tar.gz
+Summary: View disk space usage and delete unwanted data, fast.
+Name: %{name}
+Version: %{version}
+Release: %{release}
+License: MIT
+URL: https://github.com/Byron/dua-cli
+Source0: https://github.com/Byron/dua-cli/archive/refs/tags/v%{version}.tar.gz
 
 %define debug_package %{nil}
 
@@ -17,6 +17,20 @@ BuildRequires: gcc
 
 %description
 View disk space usage and delete unwanted data, fast.
+
+%package zsh
+Summary: Zsh completions for %{name}
+Requires: %{name} = %{version}-%{release}
+
+%description zsh
+Zsh shell completions for %{name}.
+
+%package fish
+Summary: Fish completions for %{name}
+Requires: %{name} = %{version}-%{release}
+
+%description fish
+Fish shell completions for %{name}.
 
 %prep
 %setup -q -n dua-cli-%{version}
@@ -29,17 +43,36 @@ cargo build --release
 
 %install
 # Create the necessary directory structure in the buildroot
-mkdir -p %{buildroot}/bin
+install -D -m 755 target/release/dua %{buildroot}%{_bindir}/dua
 
-# Copy the binary to /bin in the buildroot
-strip target/release/dua
-install -m 755 target/release/dua %{buildroot}/bin/
+# Generate completion scripts
+mkdir -p completions
+./target/release/dua completions bash > completions/dua.bash
+./target/release/dua completions zsh  > completions/_dua
+./target/release/dua completions fish > completions/dua.fish
+
+# Install bash completions
+install -D -m 644 completions/dua.bash %{buildroot}%{_datadir}/bash-completion/completions/dua
+
+# Install zsh completions
+install -D -m 644 completions/_dua %{buildroot}%{_datadir}/zsh/site-functions/_dua
+
+# Install fish completions
+install -D -m 644 completions/dua.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/dua.fish
 
 %files
-# List all the files to be included in the package
-/bin/dua
+%license LICENSE
+%{_bindir}/dua
+%{_datadir}/bash-completion/completions/dua
+
+%files zsh
+%{_datadir}/zsh/site-functions/_dua
+
+%files fish
+%{_datadir}/fish/vendor_completions.d/dua.fish
 
 %changelog
+* Sun Sep 14 2025 - Danie de Jager - 3.31.0-2
 * Wed Aug 6 2025 - Danie de Jager - 3.31.0-1
 * Sat Jul 26 2025 - Danie de Jager - 3.30.1-2
 * Sun May 11 2025 - Danie de Jager - 3.30.1-1
