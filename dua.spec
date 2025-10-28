@@ -1,5 +1,5 @@
 %define name dua
-%define version 2.32.0
+%define version 2.32.2
 %define release 1%{?dist}
 
 Summary: View disk space usage and delete unwanted data, fast.
@@ -72,6 +72,7 @@ install -D -m 644 completions/dua.fish %{buildroot}%{_datadir}/fish/vendor_compl
 %{_datadir}/fish/vendor_completions.d/dua.fish
 
 %changelog
+* Tue Oct 28 2025 - Danie de Jager - 3.32.2-1
 * Mon Sep 15 2025 - Danie de Jager - 3.32.0-1
 * Sun Sep 14 2025 - Danie de Jager - 3.31.0-2
 * Wed Aug 6 2025 - Danie de Jager - 3.31.0-1
