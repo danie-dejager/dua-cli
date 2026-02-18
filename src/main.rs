@@ -3,7 +3,7 @@ use anyhow::Result;
 use clap::{CommandFactory as _, Parser};
 use dua::{TraversalSorting, canonicalize_ignore_dirs};
 use log::info;
-use std::{fs, io, io::Write, path::PathBuf, process};
+use std::{fs, io, io::IsTerminal, io::Write, path::PathBuf, process};
 
 #[cfg(feature = "tui-crossplatform")]
 use crate::interactive::input::input_channel;
@@ -16,10 +16,22 @@ mod interactive;
 mod options;
 
 fn stderr_if_tty() -> Option<io::Stderr> {
-    if atty::is(atty::Stream::Stderr) {
-        Some(io::stderr())
+    let stderr = io::stderr();
+    if stderr.is_terminal() {
+        Some(stderr)
     } else {
         None
+    }
+}
+
+#[cfg(feature = "tui-crossplatform")]
+struct InteractiveTerminalGuard;
+
+#[cfg(feature = "tui-crossplatform")]
+impl Drop for InteractiveTerminalGuard {
+    fn drop(&mut self) {
+        crossterm::terminal::disable_raw_mode().ok();
+        crossterm::execute!(io::stderr(), crossterm::terminal::LeaveAlternateScreen).ok();
     }
 }
 
@@ -77,17 +89,23 @@ fn main() -> Result<()> {
         #[cfg(feature = "tui-crossplatform")]
         Some(Interactive { no_entry_check }) => {
             use anyhow::{Context, anyhow};
-            use crosstermion::terminal::{AlternateRawScreen, tui::new_terminal};
+            use crossterm::{
+                execute,
+                terminal::{EnterAlternateScreen, enable_raw_mode},
+            };
+            use tui::{Terminal, backend::CrosstermBackend};
 
             let no_tty_msg = "Interactive mode requires a connected terminal";
-            if atty::isnt(atty::Stream::Stderr) {
+            if !io::stderr().is_terminal() {
                 return Err(anyhow!(no_tty_msg));
             }
 
-            let mut terminal = new_terminal(
-                AlternateRawScreen::try_from(io::stderr()).with_context(|| no_tty_msg)?,
-            )
-            .with_context(|| "Could not instantiate terminal")?;
+            let mut stderr = io::stderr();
+            enable_raw_mode().with_context(|| no_tty_msg)?;
+            execute!(stderr, EnterAlternateScreen).with_context(|| no_tty_msg)?;
+            let terminal_guard = InteractiveTerminalGuard;
+            let mut terminal = Terminal::new(CrosstermBackend::new(stderr))
+                .with_context(|| "Could not instantiate terminal")?;
 
             let keys_rx = input_channel();
             let mut app = TerminalApp::initialize(
@@ -115,6 +133,7 @@ fn main() -> Result<()> {
             std::mem::forget(app);
 
             drop(terminal);
+            drop(terminal_guard);
             io::stderr().flush().ok();
 
             // Exit 'quickly' to avoid having to not have to deal with slightly different types in the other match branches
