@@ -6,12 +6,12 @@ use std::ffi::OsString;
 use crate::interactive::app::tests::utils::{into_codes, into_events};
 use crate::interactive::widgets::Column;
 use crate::interactive::{
-    SortMode,
+    MTimeSort, SortMode,
     app::tests::{
         FIXTURE_PATH,
         utils::{
             fixture_str, index_by_name, initialized_app_and_terminal_from_fixture, into_keys,
-            node_by_index, node_by_name,
+            node_by_index, node_by_name, untraversed_app_and_terminal_from_fixture,
         },
     },
 };
@@ -85,15 +85,36 @@ fn simple_user_journey_read_only() -> Result<()> {
         app.process_events(&mut terminal, into_codes("m"))?;
         assert_eq!(
             app.state.sorting,
-            SortMode::MTimeDescending,
+            SortMode::MTimeDescending(MTimeSort::Entry),
             "it sets the sort mode to descending by mtime"
         );
         // when hitting the M key again
         app.process_events(&mut terminal, into_codes("m"))?;
         assert_eq!(
             app.state.sorting,
-            SortMode::MTimeAscending,
+            SortMode::MTimeAscending(MTimeSort::Entry),
             "it sets the sort mode to ascending by mtime"
+        );
+        // when hitting the M key
+        app.process_events(&mut terminal, into_codes("M"))?;
+        assert_eq!(
+            app.state.sorting,
+            SortMode::MTimeAscending(MTimeSort::RecursiveChildrenNewest),
+            "it cycles the mtime sort mode to deep newest"
+        );
+        // when hitting the M key again
+        app.process_events(&mut terminal, into_codes("M"))?;
+        assert_eq!(
+            app.state.sorting,
+            SortMode::MTimeAscending(MTimeSort::RecursiveChildrenOldest),
+            "it cycles the mtime sort mode to deep oldest"
+        );
+        // when hitting the m key again
+        app.process_events(&mut terminal, into_codes("m"))?;
+        assert_eq!(
+            app.state.sorting,
+            SortMode::MTimeDescending(MTimeSort::RecursiveChildrenOldest),
+            "it toggles mtime direction without changing the mtime sort mode"
         );
         // when hitting the C key
         app.process_events(&mut terminal, into_codes("c"))?;
@@ -159,15 +180,25 @@ fn simple_user_journey_read_only() -> Result<()> {
         );
 
         app.process_events(&mut terminal, into_codes("M"))?;
+        assert_eq!(
+            app.state.sorting,
+            SortMode::SizeDescending,
+            "hit the M key to show modified times without changing non-mtime sorting"
+        );
         assert!(
             app.state.show_columns.contains(&Column::MTime),
-            "hit the M key to show the entry count column"
+            "hit the M key to show the modified time column"
         );
 
         app.process_events(&mut terminal, into_codes("M"))?;
+        assert_eq!(
+            app.state.sorting,
+            SortMode::SizeDescending,
+            "hit the M key again to hide modified times without changing non-mtime sorting"
+        );
         assert!(
             !app.state.show_columns.contains(&Column::MTime),
-            "when hitting the M key again it hides the entry count column"
+            "when hitting the M key again it hides the modified time column"
         );
     }
 
@@ -411,6 +442,66 @@ fn simple_user_journey_read_only() -> Result<()> {
         // tend to just work when they compile, and while experimenting, tests can be in the way.
         // However, if Dua should be more widely used, we need CI and these tests written.
     }
+
+    Ok(())
+}
+
+#[test]
+fn once_finishes_traversal_without_user_events() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+
+    let result = app.process_events_once(&mut terminal, into_events([]))?;
+
+    assert_eq!(result.num_errors, 0);
+    assert!(
+        app.state.scan.is_none(),
+        "once mode should stop after traversal completes"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn once_replays_user_events_after_traversal() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+
+    app.process_events_once(&mut terminal, into_codes("n"))?;
+
+    assert_eq!(
+        app.state.sorting,
+        SortMode::NameAscending,
+        "once mode should replay supplied key events after traversal"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn once_allows_replayed_quit_to_exit() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+
+    let result = app.process_events_once(&mut terminal, into_codes("q"))?;
+
+    assert_eq!(result.num_errors, 0);
+
+    Ok(())
+}
+
+#[test]
+fn once_waits_for_replayed_refresh_to_finish() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+
+    let result = app.process_events_once(&mut terminal, into_codes("R"))?;
+
+    assert_eq!(result.num_errors, 0);
+    assert!(
+        app.state.scan.is_none(),
+        "once mode should wait for refreshes started by replayed events"
+    );
 
     Ok(())
 }

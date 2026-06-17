@@ -6,13 +6,36 @@ use std::time::SystemTime;
 use std::{cmp::Ordering, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Controls which modification time is used for mtime sorting.
+#[derive(Default, Debug, Copy, Clone, PartialOrd, PartialEq, Eq)]
+pub enum MTimeSort {
+    /// Use each entry's own modification time.
+    #[default]
+    Entry,
+    /// Use the newest modification time among each entry's descendants.
+    RecursiveChildrenNewest,
+    /// Use the oldest modification time among each entry's descendants.
+    RecursiveChildrenOldest,
+}
+
+impl MTimeSort {
+    fn cycle(self) -> Self {
+        use MTimeSort::*;
+        match self {
+            Entry => RecursiveChildrenNewest,
+            RecursiveChildrenNewest => RecursiveChildrenOldest,
+            RecursiveChildrenOldest => Entry,
+        }
+    }
+}
+
 #[derive(Default, Debug, Copy, Clone, PartialOrd, PartialEq, Eq)]
 pub enum SortMode {
     #[default]
     SizeDescending,
     SizeAscending,
-    MTimeDescending,
-    MTimeAscending,
+    MTimeDescending(MTimeSort),
+    MTimeAscending(MTimeSort),
     CountDescending,
     CountAscending,
     NameDescending,
@@ -32,9 +55,25 @@ impl SortMode {
     pub fn toggle_mtime(&mut self) {
         use SortMode::*;
         *self = match self {
-            MTimeAscending => MTimeDescending,
-            MTimeDescending => MTimeAscending,
-            _ => MTimeDescending,
+            MTimeAscending(sort) => MTimeDescending(*sort),
+            MTimeDescending(sort) => MTimeAscending(*sort),
+            _ => MTimeDescending(MTimeSort::Entry),
+        }
+    }
+
+    pub fn cycle_mtime_sort(&mut self) {
+        match self {
+            SortMode::MTimeAscending(sort) | SortMode::MTimeDescending(sort) => {
+                *sort = sort.cycle();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn mtime_sort(self) -> Option<MTimeSort> {
+        match self {
+            SortMode::MTimeAscending(sort) | SortMode::MTimeDescending(sort) => Some(sort),
+            _ => None,
         }
     }
 
@@ -57,13 +96,25 @@ impl SortMode {
     }
 }
 
+/// Filesystem entry data prepared for interactive views.
 pub struct EntryDataBundle {
+    /// Index of this entry in the traversal tree.
     pub index: TreeIndex,
+    /// Display path for this entry in the current view.
+    ///
+    /// This is usually the entry name relative to its parent, but may be a
+    /// multi-component path when the current view needs to show entries outside
+    /// their immediate parent. Use `file_name()` when only the basename matters.
     pub name: PathBuf,
+    /// Entry size in bytes, including recursive child sizes for directories.
     pub size: u128,
+    /// Modification time used by the active view or sort mode.
     pub mtime: SystemTime,
+    /// Recursive child entry count for directories, or `None` for files.
     pub entry_count: Option<u64>,
+    /// Whether this entry currently resolves to a directory.
     pub is_dir: bool,
+    /// Whether this entry still exists when metadata is checked for the view.
     pub exists: bool,
 }
 
@@ -92,6 +143,7 @@ pub fn sorted_entries(
     check: EntryCheck,
 ) -> Vec<EntryDataBundle> {
     use SortMode::*;
+    let mtime_sort = sorting.mtime_sort().unwrap_or_default();
     fn cmp_count(l: &EntryDataBundle, r: &EntryDataBundle) -> Ordering {
         l.entry_count
             .cmp(&r.entry_count)
@@ -127,7 +179,7 @@ pub fn sorted_entries(
                         entry.name.clone()
                     },
                     size: entry.size,
-                    mtime: entry.mtime,
+                    mtime: mtime_for_sort(tree, idx, entry.mtime, mtime_sort),
                     entry_count: entry.entry_count,
                     exists,
                     is_dir,
@@ -137,14 +189,60 @@ pub fn sorted_entries(
         .sorted_by(|l, r| match sorting {
             SizeDescending => r.size.cmp(&l.size),
             SizeAscending => l.size.cmp(&r.size),
-            MTimeAscending => l.mtime.cmp(&r.mtime),
-            MTimeDescending => r.mtime.cmp(&l.mtime),
+            MTimeAscending(_) => l.mtime.cmp(&r.mtime),
+            MTimeDescending(_) => r.mtime.cmp(&l.mtime),
             CountAscending => cmp_count(l, r),
             CountDescending => cmp_count(l, r).reverse(),
             NameAscending => cmp_name(l, r),
             NameDescending => cmp_name(l, r).reverse(),
         })
         .collect()
+}
+
+fn mtime_for_sort(
+    tree: &Tree,
+    node_idx: TreeIndex,
+    entry_mtime: SystemTime,
+    sort: MTimeSort,
+) -> SystemTime {
+    use MTimeSort::*;
+    match sort {
+        Entry => entry_mtime,
+        RecursiveChildrenNewest => max_mtime_of_descendants(tree, node_idx).unwrap_or(entry_mtime),
+        RecursiveChildrenOldest => min_mtime_of_descendants(tree, node_idx).unwrap_or(entry_mtime),
+    }
+}
+
+fn max_mtime_of_descendants(tree: &Tree, node_idx: TreeIndex) -> Option<SystemTime> {
+    mtime_of_descendants_with_ordering(tree, node_idx, Ordering::Greater)
+}
+
+fn min_mtime_of_descendants(tree: &Tree, node_idx: TreeIndex) -> Option<SystemTime> {
+    mtime_of_descendants_with_ordering(tree, node_idx, Ordering::Less)
+}
+
+fn mtime_of_descendants_with_ordering(
+    tree: &Tree,
+    node_idx: TreeIndex,
+    ordering: Ordering,
+) -> Option<SystemTime> {
+    let mut stack: Vec<_> = tree
+        .neighbors_directed(node_idx, Direction::Outgoing)
+        .collect();
+    let mut selected_mtime: Option<SystemTime> = None;
+    while let Some(idx) = stack.pop() {
+        if let Some(entry) = tree.node_weight(idx) {
+            selected_mtime = Some(selected_mtime.map_or(entry.mtime, |selected| {
+                if entry.mtime.cmp(&selected) == ordering {
+                    entry.mtime
+                } else {
+                    selected
+                }
+            }));
+            stack.extend(tree.neighbors_directed(idx, Direction::Outgoing));
+        }
+    }
+    selected_mtime
 }
 
 pub fn fit_string_graphemes_with_ellipsis(
