@@ -76,7 +76,7 @@ jobs:
       EXE_NAME: dua
     strategy:
       matrix:
-        build: [linux, linux-arm, linux-arm64, macos, win-msvc, win32-msvc, win-msvc-arm]
+        build: [linux, linux-arm, linux-arm64, linux-riscv64, macos, win-msvc, win32-msvc, win-msvc-arm]
         include:
           - build: linux
             os: ubuntu-latest
@@ -90,6 +90,10 @@ jobs:
             os: ubuntu-latest
             rust: stable
             target: aarch64-unknown-linux-musl
+          - build: linux-riscv64
+            os: ubuntu-latest
+            rust: stable
+            target: riscv64gc-unknown-linux-gnu
           - build: macos
             os: macos-latest
             rust: stable
@@ -183,6 +187,14 @@ jobs:
             messense/rust-musl-cross:aarch64-musl \
             musl-strip \
             /target/aarch64-unknown-linux-musl/release/${{ env.EXE_NAME }}
+      - name: Strip release binary (riscv64)
+        if: matrix.build == 'linux-riscv64'
+        run: |
+          docker run --rm -v \
+            "$PWD/target:/target:Z" \
+            rustembedded/cross:riscv64gc-unknown-linux-gnu \
+            riscv64-linux-gnu-strip \
+            /target/riscv64gc-unknown-linux-gnu/release/${{ env.EXE_NAME }}
       - name: Build archive
         shell: bash
         run: |
