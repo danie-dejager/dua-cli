@@ -95,7 +95,7 @@ jobs:
             rust: stable
             target: riscv64gc-unknown-linux-gnu
           - build: macos
-            os: macos-latest
+            os: macos-14
             rust: stable
             target: x86_64-apple-darwin
           - build: macos-arm64
@@ -127,7 +127,7 @@ jobs:
           ci/ubuntu-install-packages
 
       - name: Install packages (macOS)
-        if: matrix.build == 'macos' || matrix.build == 'macos-arm64'
+        if: startsWith(matrix.os, 'macos-')
         run: |
           ci/macos-install-packages
 
@@ -173,7 +173,7 @@ jobs:
         run: ${{ env.CARGO }} build --verbose --release ${{ env.TARGET_FLAGS }}
 
       - name: Strip release binary (linux and macos)
-        if: matrix.build == 'linux' || matrix.build == 'macos' || matrix.build == 'macos-arm64'
+        if: matrix.build == 'linux' || startsWith(matrix.os, 'macos-')
         run: strip "target/${{ matrix.target }}/release/${{ env.EXE_NAME }}"
       - name: Strip release binary (arm)
         if: matrix.build == 'linux-arm'
