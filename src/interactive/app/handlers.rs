@@ -6,10 +6,18 @@ use crate::interactive::{
 use crossterm::event::KeyEvent;
 use dua::Config;
 use dua::traverse::TreeIndex;
-use std::{collections::BTreeSet, fs, io, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    fs, io,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 use tui::{Terminal, backend::Backend};
 
-use super::state::{AppState, FocussedPane::*};
+use super::{
+    notification,
+    state::{AppState, FocussedPane::*},
+};
 
 #[derive(Copy, Clone)]
 pub enum CursorMode {
@@ -21,6 +29,26 @@ pub enum CursorMode {
 pub enum MarkEntryMode {
     Toggle,
     MarkForDeletion,
+}
+
+/// Aggregate outcome of an entire deletion or trash operation.
+///
+/// This combines the results for all selected entries and adds the operation's
+/// wall-clock duration for the completion notification. In contrast,
+/// [`EntryDeletionStats`] describes the lower-level removal of one selected entry.
+struct DeletionStats {
+    entries: usize,
+    bytes: u128,
+    errors: usize,
+    elapsed: Duration,
+}
+
+/// Outcome of removing one selected entry from the filesystem and traversal.
+#[derive(Default)]
+struct EntryDeletionStats {
+    entries: usize,
+    bytes: u128,
+    errors: usize,
 }
 
 pub enum CursorDirection {
@@ -287,41 +315,83 @@ impl AppState {
             Some((pane, mode)) => match mode {
                 Some(MarkMode::Delete) => {
                     self.message = Some("Deleting items...".to_string());
+                    let start = Instant::now();
                     let mut entries_deleted = 0;
+                    let mut bytes_deleted = 0;
+                    let mut errors = 0;
                     let res = pane.iterate_deletable_items(|mut pane, entry_to_delete| {
                         window.mark_pane = Some(pane);
                         self.draw(window, tree_view, display, terminal, config).ok();
                         pane = window.mark_pane.take().expect("option to be filled");
                         match self.delete_entry(entry_to_delete, tree_view) {
-                            Ok(ed) => {
-                                entries_deleted += ed;
+                            Ok(stats) => {
+                                entries_deleted += stats.entries;
+                                bytes_deleted += stats.bytes;
                                 self.message = Some(format!("Deleted {entries_deleted} items..."));
                                 Ok(pane)
                             }
-                            Err(c) => Err((pane, c)),
+                            Err(stats) => {
+                                entries_deleted += stats.entries;
+                                bytes_deleted += stats.bytes;
+                                errors += stats.errors;
+                                Err((pane, stats.errors))
+                            }
                         }
                     });
                     self.message = None;
+                    self.notify_deletion_finished(
+                        "Deletion",
+                        DeletionStats {
+                            entries: entries_deleted,
+                            bytes: bytes_deleted,
+                            elapsed: start.elapsed(),
+                            errors,
+                        },
+                        display,
+                        config,
+                    );
                     res
                 }
                 #[cfg(feature = "trash-move")]
                 Some(MarkMode::Trash) => {
                     self.message = Some("Trashing items...".to_string());
+                    let start = Instant::now();
                     let mut entries_trashed = 0;
+                    let mut bytes_trashed = 0;
+                    let mut errors = 0;
                     let res = pane.iterate_deletable_items(|mut pane, entry_to_trash| {
                         window.mark_pane = Some(pane);
                         self.draw(window, tree_view, display, terminal, config).ok();
                         pane = window.mark_pane.take().expect("option to be filled");
+                        let entry_size = tree_view
+                            .tree()
+                            .node_weight(entry_to_trash)
+                            .map_or(0, |entry| entry.size);
                         match self.trash_entry(entry_to_trash, tree_view) {
                             Ok(ed) => {
                                 entries_trashed += ed;
+                                bytes_trashed += entry_size;
                                 self.message = Some(format!("Trashed {entries_trashed} items..."));
                                 Ok(pane)
                             }
-                            Err(c) => Err((pane, c)),
+                            Err(c) => {
+                                errors += c;
+                                Err((pane, c))
+                            }
                         }
                     });
                     self.message = None;
+                    self.notify_deletion_finished(
+                        "Trash",
+                        DeletionStats {
+                            entries: entries_trashed,
+                            bytes: bytes_trashed,
+                            elapsed: start.elapsed(),
+                            errors,
+                        },
+                        display,
+                        config,
+                    );
                     res
                 }
                 None => Some(pane),
@@ -333,18 +403,51 @@ impl AppState {
         }
     }
 
-    pub fn delete_entry(
+    fn notify_deletion_finished(
+        &self,
+        action: &str,
+        stats: DeletionStats,
+        display: DisplayOptions,
+        config: &Config,
+    ) {
+        let message = notification::deletion_finished(
+            action,
+            stats.entries,
+            stats.bytes,
+            stats.elapsed,
+            stats.errors,
+            display.byte_format,
+        );
+        if let Err(err) = notification::emit_if_unfocused(
+            config.notifications.delete_finished,
+            self.terminal_focus.is_focussed(),
+            &message,
+        ) {
+            log::debug!("Could not emit terminal notification: {err}");
+        }
+    }
+
+    fn delete_entry(
         &mut self,
         index: TreeIndex,
         tree_view: &mut TreeView<'_>,
-    ) -> Result<usize, usize> {
-        let mut entries_deleted = 0;
-        if tree_view.exists(index) {
-            let path_to_delete = tree_view.path_of(index);
-            delete_directory_recursively(path_to_delete)?;
-            entries_deleted = self.delete_entries_in_traversal(index, tree_view);
+    ) -> Result<EntryDeletionStats, EntryDeletionStats> {
+        if !tree_view.exists(index) {
+            return Ok(EntryDeletionStats::default());
         }
-        Ok(entries_deleted)
+        let path_to_delete = tree_view.path_of(index);
+        let bytes = tree_view
+            .tree()
+            .node_weight(index)
+            .map_or(0, |entry| entry.size);
+        let mut stats = delete_directory_recursively(path_to_delete);
+        if stats.errors == 0 {
+            stats.entries = self.delete_entries_in_traversal(index, tree_view);
+            stats.bytes = bytes;
+            Ok(stats)
+        } else {
+            Err(stats)
+        }
     }
 
     #[cfg(feature = "trash-move")]
@@ -551,13 +654,6 @@ impl AppState {
     }
 }
 
-fn into_error_count(res: Result<(), io::Error>) -> usize {
-    match res.map_err(io_err_to_usize) {
-        Ok(_) => 0,
-        Err(c) => c,
-    }
-}
-
 fn annotation_message(cleanup_count: usize, gitignored_count: usize) -> Option<String> {
     let count = cleanup_count + gitignored_count;
     if count == 0 {
@@ -588,50 +684,81 @@ fn io_err_to_usize(err: io::Error) -> usize {
 
 // TODO: could use jwalk for this
 // see https://github.com/Byron/dua-cli/issues/43
-fn delete_directory_recursively(path: PathBuf) -> Result<(), usize> {
+fn delete_directory_recursively(path: PathBuf) -> EntryDeletionStats {
     let mut files_or_dirs = vec![path];
     let mut dirs = Vec::new();
-    let mut num_errors = 0;
+    let mut stats = EntryDeletionStats::default();
     while let Some(path) = files_or_dirs.pop() {
         let assume_symlink_to_try_deletion = true;
-        let is_symlink = path
-            .symlink_metadata()
+        let metadata = path.symlink_metadata();
+        let bytes = metadata.as_ref().map_or(0, |metadata| metadata.len()) as u128;
+        let is_symlink = metadata
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(assume_symlink_to_try_deletion);
         if is_symlink {
             // do not follow symlinks
-            num_errors += into_error_count(fs::remove_file(&path));
+            record_removal(fs::remove_file(&path), bytes, &mut stats);
             continue;
         }
         match fs::read_dir(&path) {
             Ok(iterator) => {
-                dirs.push(path);
+                dirs.push((path, bytes));
                 for entry in iterator {
                     match entry.map_err(io_err_to_usize) {
                         Ok(entry) => files_or_dirs.push(entry.path()),
-                        Err(c) => num_errors += c,
+                        Err(c) => stats.errors += c,
                     }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotADirectory => {
                 // try again with file deletion instead.
-                num_errors += into_error_count(fs::remove_file(path));
+                record_removal(fs::remove_file(path), bytes, &mut stats);
                 continue;
             }
             Err(_) => {
-                num_errors += 1;
+                stats.errors += 1;
                 continue;
             }
         };
     }
 
-    for dir in dirs.into_iter().rev() {
-        num_errors += into_error_count(fs::remove_dir(&dir).or_else(|_| fs::remove_file(dir)));
+    for (dir, bytes) in dirs.into_iter().rev() {
+        record_removal(
+            fs::remove_dir(&dir).or_else(|_| fs::remove_file(dir)),
+            bytes,
+            &mut stats,
+        );
     }
 
-    if num_errors == 0 {
-        Ok(())
-    } else {
-        Err(num_errors)
+    stats
+}
+
+fn record_removal(result: io::Result<()>, bytes: u128, stats: &mut EntryDeletionStats) {
+    match result {
+        Ok(()) => {
+            stats.entries += 1;
+            stats.bytes += bytes;
+        }
+        Err(err) => stats.errors += io_err_to_usize(err),
+    }
+}
+
+#[cfg(test)]
+mod deletion_notification_tests {
+    use super::*;
+
+    #[test]
+    fn retains_partial_success_statistics_alongside_errors() {
+        let mut stats = EntryDeletionStats::default();
+        record_removal(Ok(()), 42, &mut stats);
+        record_removal(
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied")),
+            100,
+            &mut stats,
+        );
+
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.bytes, 42);
+        assert_eq!(stats.errors, 1);
     }
 }

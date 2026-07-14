@@ -15,6 +15,7 @@ use dua::{
 use std::path::PathBuf;
 use tui::{Terminal, backend::Backend, buffer::Buffer, layout::Rect, widgets::Widget};
 
+use super::notification;
 use super::state::{AppState, Cursor};
 use super::tree_view::TreeView;
 
@@ -236,6 +237,22 @@ impl AppState {
                         }
                         self.update_state_during_traversal(traversal, previous_selection.as_ref(), is_finished);
                         self.refresh_screen(window, traversal, display, terminal, config)?;
+                        if is_finished {
+                            let message = notification::scan_finished(
+                                self.stats.entries_traversed,
+                                self.stats.total_bytes.unwrap_or_default(),
+                                self.stats.elapsed.unwrap_or_else(|| self.stats.start.elapsed()),
+                                self.stats.io_errors,
+                                display.byte_format,
+                            );
+                            if let Err(err) = notification::emit_if_unfocused(
+                                config.notifications.scan_finished,
+                                self.terminal_focus.is_focussed(),
+                                &message,
+                            ) {
+                                log::debug!("Could not emit terminal notification: {err}");
+                            }
+                        }
                     };
                 }
             }
@@ -305,6 +322,14 @@ impl AppState {
         use crossterm::event::KeyCode::*;
 
         let key = match event {
+            Event::FocusGained => {
+                self.terminal_focus.observe(&Event::FocusGained);
+                return Ok(None);
+            }
+            Event::FocusLost => {
+                self.terminal_focus.observe(&Event::FocusLost);
+                return Ok(None);
+            }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key != refresh_key() {
                     self.received_events = true;
