@@ -26,6 +26,10 @@ use std::path::PathBuf;
 ///
 /// [keys]
 /// esc_navigates_back = true
+///
+/// [notifications]
+/// scan_finished = true
+/// delete_finished = true
 /// ```
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -35,6 +39,9 @@ pub struct Config {
 
     /// Keybinding-related settings.
     pub keys: KeysConfig,
+
+    /// Interactive completion-notification settings.
+    pub notifications: NotificationsConfig,
 
     /// Whether Git-ignored entry detection is enabled.
     ///
@@ -47,6 +54,32 @@ pub struct Config {
     /// Supported values: `true` and `false`.
     /// If unset, defaults to `true`.
     pub cleanup_heuristics: Option<bool>,
+}
+
+/// Completion notifications emitted by interactive mode.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// Notify after initial scans and refreshes finish.
+    pub scan_finished: bool,
+    /// Notify after deletion or trash operations finish.
+    pub delete_finished: bool,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            scan_finished: true,
+            delete_finished: true,
+        }
+    }
+}
+
+impl NotificationsConfig {
+    /// Whether any notification needs terminal focus tracking.
+    pub fn any_enabled(&self) -> bool {
+        self.scan_finished || self.delete_finished
+    }
 }
 
 /// Keyboard interaction settings.
@@ -133,6 +166,11 @@ impl Config {
             "# If true, pressing <Esc> in the main pane ascends to the parent directory.\n",
             "# If false, <Esc> follows the default quit behavior.\n",
             "esc_navigates_back = true\n",
+            "#\n",
+            "[notifications]\n",
+            "# Send terminal notifications when interactive operations finish while unfocused.\n",
+            "scan_finished = true\n",
+            "delete_finished = true\n",
         )
     }
 
@@ -156,6 +194,46 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn notifications_default_to_enabled_and_can_be_disabled() {
+        let defaults: Config = toml::from_str("").expect("valid config");
+        assert!(defaults.notifications.scan_finished);
+        assert!(defaults.notifications.delete_finished);
+
+        let configured: Config = toml::from_str(
+            r#"
+            [notifications]
+            scan_finished = false
+            delete_finished = false
+            "#,
+        )
+        .expect("valid config");
+        assert!(!configured.notifications.scan_finished);
+        assert!(!configured.notifications.delete_finished);
+    }
+
+    #[test]
+    fn notifications_are_enabled_if_any_notification_is_enabled() {
+        let disabled: Config = toml::from_str(
+            r#"
+            [notifications]
+            scan_finished = false
+            delete_finished = false
+            "#,
+        )
+        .expect("valid config");
+        assert!(!disabled.notifications.any_enabled());
+
+        let partly_enabled: Config = toml::from_str(
+            r#"
+            [notifications]
+            scan_finished = false
+            "#,
+        )
+        .expect("valid config");
+        assert!(partly_enabled.notifications.any_enabled());
+    }
 
     #[test]
     fn parses_configured_byte_format() {

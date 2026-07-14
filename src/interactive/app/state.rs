@@ -6,7 +6,7 @@ use dua::traverse::{BackgroundTraversal, TraversalStats};
 
 use crate::interactive::widgets::Column;
 
-use super::{EntryDataBundle, SortMode, navigation::Navigation};
+use super::{EntryDataBundle, SortMode, input::TerminalFocus, navigation::Navigation};
 
 #[derive(Default, Copy, Clone, PartialEq)]
 pub enum FocussedPane {
@@ -49,6 +49,8 @@ pub struct AppState {
     pub message: Option<String>,
     /// Pane that currently receives keyboard input.
     pub focussed: FocussedPane,
+    /// Focus state shared with the terminal input reader.
+    pub terminal_focus: TerminalFocus,
     /// Whether user input or terminal events have arrived since the current scan started.
     pub received_events: bool,
     /// Active background filesystem traversal, if a scan or refresh is running.
@@ -77,6 +79,7 @@ impl AppState {
             show_columns: Default::default(),
             message: None,
             focussed: Default::default(),
+            terminal_focus: TerminalFocus::default(),
             received_events: false,
             scan: None,
             stats: TraversalStats::default(),

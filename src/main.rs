@@ -33,11 +33,15 @@ fn stderr_if_tty() -> Option<io::Stderr> {
 struct InteractiveTerminalGuard {
     raw_mode: bool,
     alternate_screen: bool,
+    focus_change: bool,
 }
 
 #[cfg(feature = "tui-crossplatform")]
 impl Drop for InteractiveTerminalGuard {
     fn drop(&mut self) {
+        if self.focus_change {
+            crossterm::execute!(io::stderr(), crossterm::event::DisableFocusChange).ok();
+        }
         crossterm::execute!(io::stderr(), crossterm::cursor::Show).ok();
         if self.raw_mode {
             crossterm::terminal::disable_raw_mode().ok();
@@ -102,6 +106,7 @@ fn main() -> Result<()> {
             use tui::{Terminal, backend::CrosstermBackend};
 
             let config = dua::Config::load()?;
+            let enable_focus_change = config.notifications.any_enabled();
             let byte_format = traversal.byte_format(&config);
             let walk_options = walk_options_from(&traversal);
             let cross_filesystems = walk_options.cross_filesystems;
@@ -116,13 +121,19 @@ fn main() -> Result<()> {
                 InteractiveTerminalGuard {
                     raw_mode: false,
                     alternate_screen: false,
+                    focus_change: false,
                 }
             } else {
                 enable_raw_mode().with_context(|| no_tty_msg)?;
-                execute!(stderr, EnterAlternateScreen).with_context(|| no_tty_msg)?;
+                execute!(stderr, EnterAlternateScreen,).with_context(|| no_tty_msg)?;
+                if enable_focus_change {
+                    execute!(stderr, crossterm::event::EnableFocusChange)
+                        .with_context(|| no_tty_msg)?;
+                }
                 InteractiveTerminalGuard {
                     raw_mode: true,
                     alternate_screen: true,
+                    focus_change: enable_focus_change,
                 }
             };
             let mut terminal = Terminal::new(CrosstermBackend::new(stderr))
@@ -142,7 +153,10 @@ fn main() -> Result<()> {
                 Some(input) => {
                     app.process_events_once(&mut terminal, input_channel_from_chars(input.as_str()))
                 }
-                None => app.process_events(&mut terminal, input_channel()),
+                None => app.process_events(
+                    &mut terminal,
+                    input_channel(app.state.terminal_focus.clone()),
+                ),
             };
 
             let res = res.map(|r| {

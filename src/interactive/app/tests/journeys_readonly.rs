@@ -463,6 +463,18 @@ fn once_finishes_traversal_without_user_events() -> Result<()> {
 }
 
 #[test]
+fn tracks_terminal_focus_events() -> Result<()> {
+    let (mut terminal, mut app) = initialized_app_and_terminal_from_fixture(&["sample-01"])?;
+
+    app.process_events(&mut terminal, into_events([Event::FocusLost]))?;
+    assert!(!app.state.terminal_focus.is_focussed());
+
+    app.process_events(&mut terminal, into_events([Event::FocusGained]))?;
+    assert!(app.state.terminal_focus.is_focussed());
+    Ok(())
+}
+
+#[test]
 fn once_replays_user_events_after_traversal() -> Result<()> {
     let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
     app.traverse()?;
