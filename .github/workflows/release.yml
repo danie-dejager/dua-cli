@@ -76,7 +76,7 @@ jobs:
       EXE_NAME: dua
     strategy:
       matrix:
-        build: [linux, linux-arm, linux-arm64, linux-riscv64, macos, win-msvc, win32-msvc, win-msvc-arm]
+        build: [linux, linux-arm, linux-arm64, linux-riscv64, macos, macos-arm64, win-msvc, win32-msvc, win-msvc-arm]
         include:
           - build: linux
             os: ubuntu-latest
@@ -95,9 +95,13 @@ jobs:
             rust: stable
             target: riscv64gc-unknown-linux-gnu
           - build: macos
-            os: macos-latest
+            os: macos-14
             rust: stable
             target: x86_64-apple-darwin
+          - build: macos-arm64
+            os: macos-14
+            rust: stable
+            target: aarch64-apple-darwin
           - build: win-msvc
             os: windows-2022
             rust: nightly
@@ -123,7 +127,7 @@ jobs:
           ci/ubuntu-install-packages
 
       - name: Install packages (macOS)
-        if: matrix.os == 'macos-latest'
+        if: startsWith(matrix.os, 'macos-')
         run: |
           ci/macos-install-packages
 
@@ -169,7 +173,7 @@ jobs:
         run: ${{ env.CARGO }} build --verbose --release ${{ env.TARGET_FLAGS }}
 
       - name: Strip release binary (linux and macos)
-        if: matrix.build == 'linux' || matrix.build == 'macos'
+        if: matrix.build == 'linux' || startsWith(matrix.os, 'macos-')
         run: strip "target/${{ matrix.target }}/release/${{ env.EXE_NAME }}"
       - name: Strip release binary (arm)
         if: matrix.build == 'linux-arm'
