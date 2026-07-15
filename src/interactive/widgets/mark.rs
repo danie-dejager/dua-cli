@@ -159,10 +159,7 @@ impl MarkPane {
                 Some(entry_to_delete) => match delete_fn(self, entry_to_delete) {
                     Ok(pane) => {
                         self = pane;
-                        match self.delete_entry() {
-                            Some(p) => self = p,
-                            None => return None,
-                        }
+                        self = self.delete_entry()?;
                     }
                     Err((pane, num_errors)) => {
                         self = pane;

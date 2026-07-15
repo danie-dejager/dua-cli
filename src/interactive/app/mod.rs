@@ -6,6 +6,7 @@ mod gitignore;
 mod handlers;
 pub mod input;
 mod navigation;
+mod notification;
 pub mod state;
 pub mod terminal;
 pub mod tree_view;

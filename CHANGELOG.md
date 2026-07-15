@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.38.0 (2026-07-14)
+
+### New Features
+
+ - <csr-id-d800f22144e470c3822f668b6cc20dab2a0b1df1/> notify after interactive work when unfocused
+   Interactive scans, refreshes, deletion, and trash operations can take long
+   enough that users leave the terminal, but dua previously had no way to signal
+   completion without exiting the TUI.
+   
+   Track terminal focus events and emit sanitized OSC 777 notifications only when
+   the terminal is unfocused. Include concise entry, byte, duration, and error
+   statistics, and add a notifications config section whose scan_finished and
+   delete_finished switches default to true.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 7 commits contributed to the release over the course of 6 calendar days.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 1 unique issue was worked on: [#347](https://github.com/Byron/dua-cli/issues/347)
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **[#347](https://github.com/Byron/dua-cli/issues/347)**
+    - Notify after interactive work when unfocused ([`d800f22`](https://github.com/Byron/dua-cli/commit/d800f22144e470c3822f668b6cc20dab2a0b1df1))
+ * **Uncategorized**
+    - Merge pull request #348 from Byron/notify-when-done-and-unfocussed ([`92f4502`](https://github.com/Byron/dua-cli/commit/92f45023d52d8341f515bf0acd3d539332f391f5))
+    - Merge pull request #346 from rlex/apple_silicon_ci ([`0c81cb8`](https://github.com/Byron/dua-cli/commit/0c81cb87c58c27e8682cdc1dfbe264cba28f8437))
+    - Review ([`08d960e`](https://github.com/Byron/dua-cli/commit/08d960e7e6a0d2e9a25ced1b6e28368d41feb67b))
+    - Arm64 osx gh build ([`2d8b45f`](https://github.com/Byron/dua-cli/commit/2d8b45f409226bbe19f6ce550ef1b6c654245410))
+    - Merge pull request #345 from luhenry/main ([`11892d5`](https://github.com/Byron/dua-cli/commit/11892d53fcf9e7c82aec047bc9f21914dc9693df))
+    - Add release for linux-riscv64 ([`a90b5d8`](https://github.com/Byron/dua-cli/commit/a90b5d8d798498d1edd459024bdbe776891be17b))
+</details>
+
 ## 2.37.1 (2026-06-29)
 
 ### Bug Fixes
@@ -19,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 5 commits contributed to the release.
+ - 6 commits contributed to the release.
  - 7 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -31,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release dua-cli v2.37.1 ([`e5b1e89`](https://github.com/Byron/dua-cli/commit/e5b1e89afe554430789d228d8c32f5aa12930a7f))
     - Merge pull request #344 from Byron/interactive-path-display-degradation ([`157996b`](https://github.com/Byron/dua-cli/commit/157996be3292081d46f9e0db30598bad0e5c700c))
     - Degrade entries title on narrow terminals ([`a83583c`](https://github.com/Byron/dua-cli/commit/a83583c40b3cea909823510a0ccf6c92255c0e02))
     - Merge pull request #341 from knightmare2600/main ([`68989b6`](https://github.com/Byron/dua-cli/commit/68989b6e2909051edc08b001273d88b7797d282f))
