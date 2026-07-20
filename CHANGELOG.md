@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.38.1 (2026-07-20)
 
 This release fixes a long-standing bug where `NO_COLOR=1` would make all styling disapear, including
 the selection indicator itself. Now it's usable, finally.
@@ -18,7 +18,7 @@ the selection indicator itself. Now it's usable, finally.
 
 <csr-read-only-do-not-edit/>
 
- - 2 commits contributed to the release.
+ - 3 commits contributed to the release.
  - 6 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#238](https://github.com/Byron/dua-cli/issues/238)
@@ -32,6 +32,7 @@ the selection indicator itself. Now it's usable, finally.
  * **[#238](https://github.com/Byron/dua-cli/issues/238)**
     - Only strip colors when `NO_COLOR` is enabled ([`ad19f3f`](https://github.com/Byron/dua-cli/commit/ad19f3fe13322d548f645c16f30f3ac4553f812b))
  * **Uncategorized**
+    - Prepare changelog prior to release ([`9c89430`](https://github.com/Byron/dua-cli/commit/9c89430c6a6e4425fa540aa90ec89c39dd7a3d43))
     - Merge pull request #351 from Byron/fix-colors ([`9c9364d`](https://github.com/Byron/dua-cli/commit/9c9364ddff40096c099c59518bfc5ff6ac22ab15))
 </details>
 
@@ -4638,3 +4639,4 @@ Fix `dua -h` usage string.
 The first usable, read-only interactive terminal user interface.
 That's that. We also use `tui-react`, something that makes it much more pleasant to handle the
 application and GUI state.
+
