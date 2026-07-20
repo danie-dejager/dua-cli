@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+This release fixes a long-standing bug where `NO_COLOR=1` would make all styling disapear, including
+the selection indicator itself. Now it's usable, finally.
+
+### Bug Fixes
+
+ - <csr-id-ad19f3fe13322d548f645c16f30f3ac4553f812b/> only strip colors when `NO_COLOR` is enabled
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 2 commits contributed to the release.
+ - 6 days passed between releases.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 1 unique issue was worked on: [#238](https://github.com/Byron/dua-cli/issues/238)
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **[#238](https://github.com/Byron/dua-cli/issues/238)**
+    - Only strip colors when `NO_COLOR` is enabled ([`ad19f3f`](https://github.com/Byron/dua-cli/commit/ad19f3fe13322d548f645c16f30f3ac4553f812b))
+ * **Uncategorized**
+    - Merge pull request #351 from Byron/fix-colors ([`9c9364d`](https://github.com/Byron/dua-cli/commit/9c9364ddff40096c099c59518bfc5ff6ac22ab15))
+</details>
+
 ## 2.38.0 (2026-07-14)
 
 ### New Features
@@ -23,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 7 commits contributed to the release over the course of 6 calendar days.
+ - 8 commits contributed to the release over the course of 6 calendar days.
+ - 15 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#347](https://github.com/Byron/dua-cli/issues/347)
 
@@ -36,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  * **[#347](https://github.com/Byron/dua-cli/issues/347)**
     - Notify after interactive work when unfocused ([`d800f22`](https://github.com/Byron/dua-cli/commit/d800f22144e470c3822f668b6cc20dab2a0b1df1))
  * **Uncategorized**
+    - Release dua-cli v2.38.0 ([`72c4063`](https://github.com/Byron/dua-cli/commit/72c4063ba29bc905b45ba56999bf98e7b4205b2a))
     - Merge pull request #348 from Byron/notify-when-done-and-unfocussed ([`92f4502`](https://github.com/Byron/dua-cli/commit/92f45023d52d8341f515bf0acd3d539332f391f5))
     - Merge pull request #346 from rlex/apple_silicon_ci ([`0c81cb8`](https://github.com/Byron/dua-cli/commit/0c81cb87c58c27e8682cdc1dfbe264cba28f8437))
     - Review ([`08d960e`](https://github.com/Byron/dua-cli/commit/08d960e7e6a0d2e9a25ced1b6e28368d41feb67b))
@@ -59,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <csr-read-only-do-not-edit/>
 
  - 6 commits contributed to the release.
- - 7 days passed between releases.
+ - 8 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -199,6 +231,7 @@ environment variables (`LC_ALL` > `LC_MESSAGES` > `LANG`). English remains the d
 <csr-read-only-do-not-edit/>
 
  - 12 commits contributed to the release.
+ - 1 day passed between releases.
  - 5 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#336](https://github.com/Byron/dua-cli/issues/336)
 
@@ -299,6 +332,7 @@ environment variables (`LC_ALL` > `LC_MESSAGES` > `LANG`). English remains the d
 <csr-read-only-do-not-edit/>
 
  - 8 commits contributed to the release.
+ - 116 days passed between releases.
  - 5 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 2 unique issues were worked on: [#328](https://github.com/Byron/dua-cli/issues/328), [#331](https://github.com/Byron/dua-cli/issues/331)
 
@@ -355,7 +389,7 @@ You are welcome to contribute more settings as you see fit.
 <csr-read-only-do-not-edit/>
 
  - 18 commits contributed to the release over the course of 45 calendar days.
- - 45 days passed between releases.
+ - 46 days passed between releases.
  - 4 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -465,6 +499,7 @@ This makes it easy to use in 'quick-view' scenarios.
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release.
+ - 43 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -495,7 +530,7 @@ This makes it easy to use in 'quick-view' scenarios.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release over the course of 43 calendar days.
- - 43 days passed between releases.
+ - 44 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -531,7 +566,7 @@ That way, `dua` will not cause users to accidentally quit the app when they only
 <csr-read-only-do-not-edit/>
 
  - 12 commits contributed to the release.
- - 83 days passed between releases.
+ - 84 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -571,6 +606,7 @@ In this release, the size of directories is also taken into consideration, for m
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release.
+ - 103 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -617,7 +653,7 @@ In this release, the size of directories is also taken into consideration, for m
 <csr-read-only-do-not-edit/>
 
  - 10 commits contributed to the release over the course of 55 calendar days.
- - 84 days passed between releases.
+ - 85 days passed between releases.
  - 4 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -688,6 +724,7 @@ In this release, the size of directories is also taken into consideration, for m
 <csr-read-only-do-not-edit/>
 
  - 11 commits contributed to the release.
+ - 85 days passed between releases.
  - 3 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#265](https://github.com/Byron/dua-cli/issues/265)
 
@@ -753,6 +790,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 16 commits contributed to the release over the course of 126 calendar days.
+ - 153 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#253](https://github.com/Byron/dua-cli/issues/253)
 
@@ -808,7 +846,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 19 commits contributed to the release.
- - 46 days passed between releases.
+ - 47 days passed between releases.
  - 3 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -897,6 +935,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release.
+ - 1 day passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#223](https://github.com/Byron/dua-cli/issues/223)
 
@@ -964,7 +1003,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 45 commits contributed to the release.
- - 11 days passed between releases.
+ - 12 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#96](https://github.com/Byron/dua-cli/issues/96)
 
@@ -1097,7 +1136,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 14 commits contributed to the release over the course of 7 calendar days.
- - 7 days passed between releases.
+ - 8 days passed between releases.
  - 5 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 2 unique issues were worked on: [#196](https://github.com/Byron/dua-cli/issues/196), [#208](https://github.com/Byron/dua-cli/issues/208)
 
@@ -1175,6 +1214,7 @@ This is a maintenance release without user-facing changes.
 <csr-read-only-do-not-edit/>
 
  - 2 commits contributed to the release.
+ - 1 day passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -1213,7 +1253,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 30 commits contributed to the release.
- - 12 days passed between releases.
+ - 13 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#197](https://github.com/Byron/dua-cli/issues/197)
 
@@ -1385,7 +1425,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 14 commits contributed to the release over the course of 11 calendar days.
- - 14 days passed between releases.
+ - 15 days passed between releases.
  - 3 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 5 unique issues were worked on: [#110](https://github.com/Byron/dua-cli/issues/110), [#141](https://github.com/Byron/dua-cli/issues/141), [#179](https://github.com/Byron/dua-cli/issues/179), [#185](https://github.com/Byron/dua-cli/issues/185), [#186](https://github.com/Byron/dua-cli/issues/186)
 
@@ -1463,6 +1503,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 9 commits contributed to the release.
+ - 199 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#177](https://github.com/Byron/dua-cli/issues/177)
 
@@ -1536,6 +1577,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 14 commits contributed to the release.
+ - 71 days passed between releases.
  - 4 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 3 unique issues were worked on: [#157](https://github.com/Byron/dua-cli/issues/157), [#33](https://github.com/Byron/dua-cli/issues/33), [#85](https://github.com/Byron/dua-cli/issues/85)
 
@@ -1590,7 +1632,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release.
- - 17 days passed between releases.
+ - 18 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -1621,7 +1663,7 @@ Happy holidays!
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release over the course of 52 calendar days.
- - 53 days passed between releases.
+ - 54 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#143](https://github.com/Byron/dua-cli/issues/143)
 
@@ -1721,6 +1763,7 @@ to something without color by default thanks to the upgrade to `clap` 4.
 <csr-read-only-do-not-edit/>
 
  - 12 commits contributed to the release.
+ - 92 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -1769,7 +1812,7 @@ to something without color by default thanks to the upgrade to `clap` 4.
 <csr-read-only-do-not-edit/>
 
  - 11 commits contributed to the release over the course of 54 calendar days.
- - 68 days passed between releases.
+ - 69 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#28](https://github.com/Byron/dua-cli/issues/28)
 
@@ -1807,7 +1850,7 @@ to something without color by default thanks to the upgrade to `clap` 4.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release.
- - 20 days passed between releases.
+ - 21 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -1862,7 +1905,7 @@ thanks to an upgrade in the `open` crate which powers this feauture.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release.
- - 29 days passed between releases.
+ - 30 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -1962,7 +2005,7 @@ thanks to an upgrade in the `open` crate which powers this feauture.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release over the course of 3 calendar days.
- - 3 days passed between releases.
+ - 4 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#123](https://github.com/Byron/dua-cli/issues/123)
 
@@ -1990,7 +2033,7 @@ properly moving files into the trash that required parent directories to be crea
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release over the course of 8 calendar days.
- - 46 days passed between releases.
+ - 47 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2049,7 +2092,7 @@ The `aggregate-scan-progress` feature was removed as it shouldn't be required an
 <csr-read-only-do-not-edit/>
 
  - 9 commits contributed to the release over the course of 55 calendar days.
- - 57 days passed between releases.
+ - 58 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2127,7 +2170,7 @@ The `aggregate-scan-progress` feature was removed as it shouldn't be required an
 <csr-read-only-do-not-edit/>
 
  - 9 commits contributed to the release over the course of 60 calendar days.
- - 74 days passed between releases.
+ - 75 days passed between releases.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#116](https://github.com/Byron/dua-cli/issues/116)
 
@@ -2285,7 +2328,7 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
 <csr-read-only-do-not-edit/>
 
  - 3 commits contributed to the release.
- - 26 days passed between releases.
+ - 27 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2311,7 +2354,7 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
 <csr-read-only-do-not-edit/>
 
  - 8 commits contributed to the release over the course of 3 calendar days.
- - 5 days passed between releases.
+ - 6 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2486,7 +2529,7 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release.
- - 20 days passed between releases.
+ - 21 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2550,6 +2593,7 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
 <csr-read-only-do-not-edit/>
 
  - 3 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2575,7 +2619,7 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
 <csr-read-only-do-not-edit/>
 
  - 6 commits contributed to the release over the course of 1 calendar day.
- - 7 days passed between releases.
+ - 8 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2633,7 +2677,7 @@ YANKED.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release.
- - 19 days passed between releases.
+ - 20 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2693,7 +2737,7 @@ YANKED.
 <csr-read-only-do-not-edit/>
 
  - 16 commits contributed to the release over the course of 40 calendar days.
- - 69 days passed between releases.
+ - 70 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2740,7 +2784,7 @@ path-FS1/ path-FS2/`, as such `dua` will stay in FS1 if the CWD is in FS1.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release over the course of 5 calendar days.
- - 6 days passed between releases.
+ - 7 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2812,7 +2856,7 @@ It looks like the latest BETAs of clap removed setting the version implicitly.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release over the course of 15 calendar days.
- - 15 days passed between releases.
+ - 16 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2874,7 +2918,7 @@ with dua-cli.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release over the course of 18 calendar days.
- - 18 days passed between releases.
+ - 19 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2962,7 +3006,7 @@ Dependency update.
 <csr-read-only-do-not-edit/>
 
  - 8 commits contributed to the release over the course of 19 calendar days.
- - 30 days passed between releases.
+ - 31 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -2997,7 +3041,7 @@ Should fix [this issue](https://github.com/Byron/dua-cli/issues/66)
 <csr-read-only-do-not-edit/>
 
  - 9 commits contributed to the release over the course of 42 calendar days.
- - 79 days passed between releases.
+ - 80 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3057,7 +3101,7 @@ See [this PR](https://github.com/Byron/dua-cli/pull/62) for reference.
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release.
- - 1 day passed between releases.
+ - 2 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3149,6 +3193,7 @@ Globs for Windows; fixed handling of colors.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3297,7 +3342,7 @@ Both changes were enabled by [@Freaky](https://github.com/Freaky) whom I hereby 
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release over the course of 29 calendar days.
- - 31 days passed between releases.
+ - 32 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3327,7 +3372,7 @@ Both changes were enabled by [@Freaky](https://github.com/Freaky) whom I hereby 
 <csr-read-only-do-not-edit/>
 
  - 27 commits contributed to the release over the course of 11 calendar days.
- - 26 days passed between releases.
+ - 27 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3442,6 +3487,7 @@ Bugfix: Update currently visible entries when scanning.
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3616,6 +3662,7 @@ Upgrade to jwalk 0.5 bringing better threading control and no symlink following 
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3665,6 +3712,7 @@ YANKED - jwalk 0.5.0 wasn't used correctly which led to a performance regression
 <csr-read-only-do-not-edit/>
 
  - 6 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3741,6 +3789,7 @@ Include .md files in Crate, update dependencies.
 <csr-read-only-do-not-edit/>
 
  - 2 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3802,7 +3851,7 @@ To my pleasant surprise, this does not seem to affect performance at all - every
 <csr-read-only-do-not-edit/>
 
  - 8 commits contributed to the release over the course of 20 calendar days.
- - 20 days passed between releases.
+ - 21 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3833,6 +3882,7 @@ Binaries for Linux and MacOS are now available on GitHub Releases.
 <csr-read-only-do-not-edit/>
 
  - 9 commits contributed to the release over the course of 87 calendar days.
+ - 101 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3867,6 +3917,7 @@ Now the color of the widget frame is changed to light gray, instead of remaining
 <csr-read-only-do-not-edit/>
 
  - 2 commits contributed to the release.
+ - 89 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3923,7 +3974,7 @@ Compatibility with light terminals.
 <csr-read-only-do-not-edit/>
 
  - 7 commits contributed to the release over the course of 2 calendar days.
- - 3 days passed between releases.
+ - 4 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3956,7 +4007,7 @@ Improved handling of broken symlinks.
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release over the course of 6 calendar days.
- - 6 days passed between releases.
+ - 7 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -3990,7 +4041,7 @@ This is now fixed.
 <csr-read-only-do-not-edit/>
 
  - 2 commits contributed to the release.
- - 10 days passed between releases.
+ - 11 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -4061,6 +4112,7 @@ Fixes [#14](https://github.com/Byron/dua-cli/issues/14)
 <csr-read-only-do-not-edit/>
 
  - 1 commit contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -4081,7 +4133,7 @@ Fixes [#14](https://github.com/Byron/dua-cli/issues/14)
 <csr-read-only-do-not-edit/>
 
  - 4 commits contributed to the release over the course of 15 calendar days.
- - 15 days passed between releases.
+ - 16 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -4215,6 +4267,7 @@ Bug fixes and improvements.
 <csr-read-only-do-not-edit/>
 
  - 3 commits contributed to the release.
+ - 1 day passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -4261,6 +4314,7 @@ A sub-command bringing up a terminal user interface to allow drilling into direc
 <csr-read-only-do-not-edit/>
 
  - 234 commits contributed to the release.
+ - 14 days passed between releases.
  - 16 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -4584,4 +4638,3 @@ Fix `dua -h` usage string.
 The first usable, read-only interactive terminal user interface.
 That's that. We also use `tui-react`, something that makes it much more pleasant to handle the
 application and GUI state.
-
