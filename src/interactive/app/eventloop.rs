@@ -7,13 +7,18 @@ use crate::interactive::{
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    style::Colored,
+};
 use dua::{
     Config, WalkResult,
     traverse::{BackgroundTraversal, EntryData, Traversal, TreeIndex},
 };
 use std::path::PathBuf;
-use tui::{Terminal, backend::Backend, buffer::Buffer, layout::Rect, widgets::Widget};
+use tui::{
+    Terminal, backend::Backend, buffer::Buffer, layout::Rect, style::Color, widgets::Widget,
+};
 
 use super::notification;
 use super::state::{AppState, Cursor};
@@ -774,8 +779,19 @@ where
             }),
             frame.size(),
         );
+        // Disabled Crossterm color commands reset attributes such as reverse
+        // video, so remove colors before they reach the backend.
+        if Colored::ansi_color_disabled_memoized() {
+            strip_colors(frame.buffer_mut());
+        }
     })?;
     Ok(())
+}
+
+fn strip_colors(buffer: &mut Buffer) {
+    for cell in &mut buffer.content {
+        cell.set_fg(Color::Reset).set_bg(Color::Reset);
+    }
 }
 
 pub fn refresh_key() -> KeyEvent {
