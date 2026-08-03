@@ -37,8 +37,12 @@ impl TerminalApp {
     where
         B: Backend,
     {
-        terminal.hide_cursor()?;
-        terminal.clear()?;
+        terminal
+            .hide_cursor()
+            .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+        terminal
+            .clear()
+            .map_err(|err| anyhow::Error::msg(err.to_string()))?;
 
         let display = DisplayOptions::new(byte_format);
         let window = MainWindow::default();
@@ -53,7 +57,7 @@ impl TerminalApp {
         state.allow_entry_check = entry_check;
         let traversal = Traversal::new();
         #[cfg(test)]
-        let stats = TraversalStats::default();
+        let traversal_stats = TraversalStats::default();
 
         state.navigation_mut().view_root = traversal.root_index;
         state.entries = sorted_entries(
@@ -67,11 +71,11 @@ impl TerminalApp {
 
         let app = TerminalApp {
             config,
-            state,
-            display,
             traversal,
+            display,
+            state,
             #[cfg(test)]
-            stats,
+            stats: traversal_stats,
             window,
         };
         Ok(app)

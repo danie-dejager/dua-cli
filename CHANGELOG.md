@@ -5,6 +5,110 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.40.1 (2026-08-01)
+
+Even more performance, up to 15%. That's it now, trying to hit 1 week without a release ;).
+
+### Bug Fixes
+
+ - <csr-id-3b7415b9fa161ef20dd8dd77e7cb367a7c8a216b/> avoid aggregate progress flicker
+   <!-- agent -->
+   Track whether aggregate progress has actually been rendered before clearing the
+   terminal line. Keep sorted multi-root progress visible until final output, while
+   clearing before immediate unsorted results, and cover fast roots that previously
+   emitted repeated invisible erase sequences.
+
+### Performance
+
+ - <csr-id-4dba3ad3ac7122bdb82efdb54a49ae811e4f37f9/> parallelize filesystem traversal
+   <!-- agent -->
+   Split completion-order directory entries into small stealable metadata jobs
+   and use idle-aware relay waking with LIFO local queues. Submit all top-level
+   roots to the same worker pool, carrying a root index through descendant jobs and
+   result batches so aggregate and interactive traversal retain per-root accounting
+   without serial barriers.
+   
+   Also, track pending work per root and emit completion events after all of a
+   root's batches are delivered. Flush the longest completed input-order prefix so
+   --no-sort prints results immediately without serializing the shared worker pool.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 7 commits contributed to the release over the course of 1 calendar day.
+ - 1 day passed between releases.
+ - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Prepare next release ([`8163e0e`](https://github.com/Byron/dua-cli/commit/8163e0ee614bcb303915f22c62bb3e9b515a0a50))
+    - Merge pull request #356 from Byron/performance ([`fea714d`](https://github.com/Byron/dua-cli/commit/fea714dd6c018c7ebf16209d2678b162204e6bce))
+    - Parallelize filesystem traversal ([`4dba3ad`](https://github.com/Byron/dua-cli/commit/4dba3ad3ac7122bdb82efdb54a49ae811e4f37f9))
+    - Avoid aggregate progress flicker ([`3b7415b`](https://github.com/Byron/dua-cli/commit/3b7415b9fa161ef20dd8dd77e7cb367a7c8a216b))
+    - Upgrade ratatui to 0.30.2 ([`995571d`](https://github.com/Byron/dua-cli/commit/995571d5ceb0202ad14d41fe0067da3a5dc4bd44))
+    - Upgrade byte-unit to 5.2.5 ([`f113e06`](https://github.com/Byron/dua-cli/commit/f113e063bd946068896c090b15e937dbb74450db))
+    - Upgrade compatible dependencies ([`86b5db8`](https://github.com/Byron/dua-cli/commit/86b5db8dd147e47a302845b346b9af17774b52fa))
+</details>
+
+## 2.40.0 (2026-07-31)
+
+The headline feature is 40% more scanning speed in my particular scenario. More cores on Linux should now scale much better as well, so I wouldn't be surprised if it's even faster for you.
+
+### New Features
+
+ - <csr-id-8ada93f8b000108ce1ede69f76f1905b05bcc303/> Replace jwalk with a work-stealing directory walker for up to 40% more scan speed
+   <!-- agent -->
+   Replace jwalk and Rayon with a crate-local walker built on crossbeam-deque
+   and standard-library threads. Directory reads and metadata collection run on
+   stealable worker queues, while a bounded channel limits completed batches held
+   ahead of the iterator. The walker never follows symlinks and no longer sorts
+   entries because consumers sort their final results where needed.
+   
+   Provide two delivery modes on the shared implementation: aggregate scans and
+   recursive deletion use completion order for maximum throughput and continuous
+   progress; interactive traversal uses parent-first delivery so ancestor sizes
+   and entry counts grow throughout the scan. Recursive deletion remains parallel
+   through scoped standard-library workers.
+   
+   Raise the macOS default from three to eight filesystem workers based on
+   warm-cache measurements.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 5 commits contributed to the release.
+ - 1 day passed between releases.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Thanks Clippy
+
+<csr-read-only-do-not-edit/>
+
+[Clippy](https://github.com/rust-lang/rust-clippy) helped 1 time to make code idiomatic. 
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release dua-cli v2.40.0 ([`ba139e0`](https://github.com/Byron/dua-cli/commit/ba139e02c845c6ab4d6133a2642909a62e00cd92))
+    - Prepare changelog prior to release ([`5c9976f`](https://github.com/Byron/dua-cli/commit/5c9976f05e645eb2de5a94ddab714210b9445d73))
+    - Merge pull request #355 from Byron/workstealing ([`0b21b22`](https://github.com/Byron/dua-cli/commit/0b21b22f90dc4c7ed031561c11465e7250b9e971))
+    - Thanks clippy ([`9e36f03`](https://github.com/Byron/dua-cli/commit/9e36f030b882258e70fa4daf5591146d934f72eb))
+    - Replace jwalk with a work-stealing directory walker for up to 40% more scan speed ([`8ada93f`](https://github.com/Byron/dua-cli/commit/8ada93f8b000108ce1ede69f76f1905b05bcc303))
+</details>
+
 ## 2.39.1 (2026-07-30)
 
 This release is merely to allow attestations to be used, and you should be able to validate the binary origin with:
@@ -15,7 +119,7 @@ This release is merely to allow attestations to be used, and you should be able 
 
 <csr-read-only-do-not-edit/>
 
- - 4 commits contributed to the release.
+ - 5 commits contributed to the release.
  - 2 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -27,6 +131,7 @@ This release is merely to allow attestations to be used, and you should be able 
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release dua-cli v2.39.1 ([`818132e`](https://github.com/Byron/dua-cli/commit/818132ef48d91449713ad6ce89c1ac14d55f5e5f))
     - Prepare next release with attestations ([`953a87a`](https://github.com/Byron/dua-cli/commit/953a87a43d2faa65a0fa99b5a8965a361e7f9a31))
     - Merge pull request #354 from Vam-si-krish/ci/release-provenance ([`2d11eb9`](https://github.com/Byron/dua-cli/commit/2d11eb9b812079d0621b4f512e7bf28a0d0db83e))
     - Review ([`ddfd0fb`](https://github.com/Byron/dua-cli/commit/ddfd0fb9d423a587d4f9a838851a679b224f093b))

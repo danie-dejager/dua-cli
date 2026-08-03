@@ -6,7 +6,6 @@ use tui::{
     widgets::{Block, ListItem, ListState},
 };
 use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Default)]
 pub struct List {
@@ -54,7 +53,7 @@ pub fn draw_text_nowrap_fn(
         if col >= area.width as usize {
             break;
         }
-        let cell = buf.get_mut(area.x.saturating_add(col as u16), area.y);
+        let cell = &mut buf[(area.x.saturating_add(col as u16), area.y)];
         cell.set_char(ch);
         let style = style_fn(x, 0, ch);
         cell.set_style(style);
@@ -63,7 +62,7 @@ pub fn draw_text_nowrap_fn(
             if col + continuation >= area.width as usize {
                 break;
             }
-            let cell = buf.get_mut(area.x.saturating_add((col + continuation) as u16), area.y);
+            let cell = &mut buf[(area.x.saturating_add((col + continuation) as u16), area.y)];
             cell.set_char(' ');
             cell.set_style(style);
         }
@@ -72,14 +71,15 @@ pub fn draw_text_nowrap_fn(
 }
 
 pub mod util {
-    use super::*;
+    use super::Rect;
+    use unicode_width::UnicodeWidthStr;
 
     pub fn block_width(text: &str) -> u16 {
         text.width() as u16
     }
 
     pub mod rect {
-        use super::*;
+        use super::Rect;
 
         pub fn snap_to_right(area: Rect, width: u16) -> Rect {
             Rect {
