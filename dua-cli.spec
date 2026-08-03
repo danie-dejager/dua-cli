@@ -73,7 +73,7 @@ install -D -m 644 completions/dua.fish %{buildroot}%{_datadir}/fish/vendor_compl
 %{_datadir}/fish/vendor_completions.d/dua.fish
 
 %changelog
-* Mon Aug 02 2026 - Danie de Jager - 3.40.1-1
+* Mon Aug 03 2026 - Danie de Jager - 3.40.1-1
 * Thu Jul 30 2026 - Danie de Jager - 3.39.1-1
 * Tue Jul 28 2026 - Danie de Jager - 3.39.0-1
 * Mon Jul 20 2026 - Danie de Jager - 3.38.1-1
