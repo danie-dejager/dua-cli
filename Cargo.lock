@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "dua-cli"
-version = "2.40.1"
+version = "2.41.0"
 dependencies = [
  "anyhow",
  "bstr",
@@ -706,6 +706,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "wild",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
