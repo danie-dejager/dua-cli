@@ -1,7 +1,7 @@
 use crate::{Throttle, WalkOptions, WalkRoot, crossdev, inodefilter::InodeFilter};
 
 use crossbeam::channel::Receiver;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use filesize::PathExt;
 use petgraph::{Directed, Direction, graph::NodeIndex, stable_graph::StableGraph};
 use std::time::Instant;
@@ -182,14 +182,6 @@ impl BackgroundTraversal {
                     );
                     for root_path in input {
                         log::info!("Walking {}", root_path.display());
-                        let pattern_root = pattern_roots.as_deref().map(|pattern_roots| {
-                            pattern_roots
-                                .iter()
-                                .filter(|candidate| root_path.starts_with(candidate))
-                                .max_by_key(|candidate| candidate.components().count())
-                                .cloned()
-                                .unwrap_or_else(|| root_path.clone())
-                        });
                         let device_id = if walk_options.cross_filesystems {
                             0
                         } else {
@@ -200,10 +192,20 @@ impl BackgroundTraversal {
                             };
                             device_id
                         };
+                        let pattern_root = pattern_roots.as_deref().map(|pattern_roots| {
+                            pattern_roots
+                                .iter()
+                                .filter(|candidate| root_path.starts_with(candidate))
+                                .max_by_key(|candidate| candidate.components().count())
+                                .cloned()
+                                .unwrap_or_else(|| root_path.clone())
+                        });
                         walk_roots.push(WalkRoot {
                             index: walk_roots.len(),
                             pattern_root,
                             path: root_path.clone(),
+                            #[cfg(any(windows, target_os = "macos"))]
+                            entry: None,
                             device_id,
                         });
                         device_ids.push(device_id);
@@ -294,7 +296,7 @@ impl BackgroundTraversal {
                         data.is_dir = entry.file_type.is_dir();
                         if let Ok(m) = &entry.metadata {
                             if self.walk_options.count_hard_links
-                                || self.inodes.add(m)
+                                || self.inodes.add(&entry, m)
                                     && (self.walk_options.cross_filesystems
                                         || crossdev::is_same_device(device_id, m))
                             {
@@ -308,6 +310,8 @@ impl BackgroundTraversal {
                                                 &data.name,
                                                 m,
                                                 data.is_dir,
+                                                &self.walk_options,
+                                                &mut self.inodes,
                                             )
                                             .unwrap_or_else(|_| {
                                                 self.stats.io_errors += 1;
@@ -390,15 +394,35 @@ impl BackgroundTraversal {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 /// Return disk usage for `name` on Unix-like platforms.
 fn size_on_disk(
     _parent: &Path,
     name: &Path,
     meta: &crate::walk::Metadata,
     _is_dir: bool,
+    _options: &WalkOptions,
+    _inodes: &mut InodeFilter,
 ) -> io::Result<u64> {
     name.size_on_disk_fast(meta)
+}
+
+#[cfg(target_os = "macos")]
+/// Return disk usage from metadata already collected by the macOS filesystem walker.
+#[allow(clippy::unnecessary_wraps)]
+fn size_on_disk(
+    _parent: &Path,
+    _name: &Path,
+    meta: &crate::walk::Metadata,
+    _is_dir: bool,
+    options: &WalkOptions,
+    inodes: &mut InodeFilter,
+) -> io::Result<u64> {
+    Ok(if options.metadata_options.apfs_clone_metadata {
+        inodes.allocated_size(meta)
+    } else {
+        meta.allocated_size()
+    })
 }
 
 #[cfg(windows)]
@@ -409,6 +433,8 @@ fn size_on_disk(
     _name: &Path,
     meta: &crate::walk::Metadata,
     is_dir: bool,
+    _options: &WalkOptions,
+    _inodes: &mut InodeFilter,
 ) -> io::Result<u64> {
     Ok(if is_dir { 0 } else { meta.allocated_size() })
 }
@@ -433,6 +459,7 @@ mod tests {
                 cross_filesystems: true,
                 ignore_dirs: std::collections::BTreeSet::default(),
                 ignore_patterns: None,
+                metadata_options: crate::TraversalOptions::default(),
             },
             vec![dir.path().to_owned()],
             None,
@@ -484,6 +511,7 @@ mod tests {
                 cross_filesystems: true,
                 ignore_dirs: std::collections::BTreeSet::default(),
                 ignore_patterns: None,
+                metadata_options: crate::TraversalOptions::default(),
             },
             vec![dir.path().to_owned(), dir.path().to_owned()],
             None,
@@ -513,6 +541,54 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn interactive_traversal_deduplicates_apfs_clones() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        fn total(path: &Path, deduplicate: bool) -> u128 {
+            let mut traversal = Traversal::new();
+            let mut background = BackgroundTraversal::start(
+                traversal.root_index,
+                &WalkOptions {
+                    threads: 2,
+                    count_hard_links: false,
+                    apparent_size: false,
+                    cross_filesystems: true,
+                    ignore_dirs: std::collections::BTreeSet::default(),
+                    ignore_patterns: None,
+                    metadata_options: crate::TraversalOptions {
+                        apfs_clone_metadata: deduplicate,
+                    },
+                },
+                vec![path.to_owned()],
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+
+            while !background
+                .integrate_traversal_event(&mut traversal, background.event_rx.recv().unwrap())
+                .unwrap_or(false)
+            {}
+            traversal.tree[traversal.root_index].size
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let clone = directory.path().join("clone");
+        std::fs::write(&original, vec![1; 8192]).unwrap();
+        // std::fs::copy uses fclonefileat(2) first on Apple platforms, producing an APFS clone.
+        std::fs::copy(&original, clone).unwrap();
+        let data_fork_size = u128::from(std::fs::metadata(original).unwrap().blocks()) * 512;
+
+        assert_eq!(
+            total(directory.path(), false) - total(directory.path(), true),
+            data_fork_size
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn root_device_error_is_reported() {
@@ -533,6 +609,7 @@ mod tests {
                 cross_filesystems: false,
                 ignore_dirs: std::collections::BTreeSet::default(),
                 ignore_patterns: None,
+                metadata_options: crate::TraversalOptions::default(),
             },
             vec![root.clone(), valid.clone()],
             None,

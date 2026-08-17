@@ -14,8 +14,8 @@
 //!
 //! The root directory starts in a shared injector queue. On platforms where directory-entry
 //! metadata may require another syscall, directory reads enqueue small metadata batches, and
-//! metadata batches enqueue accepted child directories. Windows workers instead consume the
-//! metadata returned by directory enumeration directly and enqueue child directories immediately.
+//! metadata batches enqueue accepted child directories. Windows and macOS workers instead consume
+//! native metadata returned by directory enumeration and enqueue child directories immediately.
 //! Every worker can run available jobs from its local LIFO queue or steal from a peer. Each
 //! successful thief wakes another idle worker, ramping up only while work remains stealable. A
 //! worker parks when no queue has work and is unparked when new work arrives or the walk stops. The
@@ -39,25 +39,38 @@ use std::{
     thread,
 };
 
-#[cfg(any(not(windows), test))]
+#[cfg(any(not(any(windows, target_os = "macos")), test))]
 use std::{ffi::OsString, fs};
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use std::fs::{FileType, Metadata};
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos;
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
 
+#[cfg(target_os = "macos")]
+pub use macos::{Entry, FileType, Metadata};
+
+#[cfg(target_os = "macos")]
+use macos::ReadDir as NativeReadDir;
+
 #[cfg(windows)]
 pub use windows::{Entry, FileType, Metadata};
+
+#[cfg(windows)]
+use windows::ReadDir as NativeReadDir;
 
 /// Decides whether to traverse an entry's children for a given root index.
 /// Returning `false` prunes descendants but still emits the entry itself.
 type Descend = dyn Fn(usize, &Entry) -> bool + Send + Sync;
 /// Entries obtained from one directory read.
-/// The outer error means `fs::read_dir` could not open the directory; inner errors come from
-/// reading or converting individual directory entries.
+/// An outer error means the directory could not be opened; inner errors come from reading or
+/// converting individual directory entries.
 type Batch = io::Result<Vec<io::Result<Entry>>>;
 /// Number of directory entries grouped into each metadata job or result batch.
 /// Small chunks expose parallel work and stream wide directories while amortizing queue overhead.
@@ -72,8 +85,16 @@ pub enum Order {
     ParentFirst,
 }
 
+/// Platform-specific filesystem metadata requested during traversal.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Collect APFS clone identity and data-fork allocation metadata.
+    #[cfg(target_os = "macos")]
+    pub apfs_clone_metadata: bool,
+}
+
 /// A filesystem entry produced by [`walk`].
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub struct Entry {
     /// Distance from the walk root: `0` for the root, `1` for its children, and so on.
     pub depth: usize,
@@ -97,7 +118,7 @@ enum Job {
         entry_depth: usize,
     },
     /// Fetch metadata for a chunk of entries from a completed directory read.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     StatCompletion {
         root_idx: usize,
         path: Arc<Path>,
@@ -112,7 +133,7 @@ impl Job {
     fn root_idx(&self) -> usize {
         match self {
             Job::ReadDir { root_idx, .. } => *root_idx,
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             Job::StatCompletion { root_idx, .. } => *root_idx,
         }
     }
@@ -158,6 +179,8 @@ struct PoolShared {
     /// A counter reaching zero emits that root's [`Event::RootFinished`].
     jobs_per_root: HashMap<usize, AtomicUsize>,
     order: Order,
+    #[cfg(any(windows, target_os = "macos"))]
+    options: Options,
     /// Handles used to wake workers, indexed by worker number.
     unparkers: Vec<Unparker>,
     /// Whether each worker has announced that it is idle, indexed like `unparkers`.
@@ -198,6 +221,19 @@ pub struct Walk {
     pool: Option<Pool>,
 }
 
+/// Read a directory using native bulk enumeration and return entries with metadata already collected.
+///
+/// Entries have depth zero so they can be passed directly to [`walk_root_entries`] without
+/// querying their paths again. Directory-open errors are returned immediately; later enumeration
+/// errors are yielded by the iterator.
+#[cfg(any(windows, target_os = "macos"))]
+pub fn read_dir(
+    path: &Path,
+    options: Options,
+) -> io::Result<impl Iterator<Item = io::Result<Entry>>> {
+    NativeReadDir::open(Arc::from(path), 0, options)
+}
+
 /// Walk `root` without following symlinks.
 /// Unlike `walk_roots`, this yields entries directly for a single root and hides
 /// completion events.
@@ -205,9 +241,10 @@ pub fn walk(
     root: &Path,
     threads: usize,
     order: Order,
+    options: Options,
     descend: impl Fn(&Entry) -> bool + Send + Sync + 'static,
 ) -> Walk {
-    let root = Entry::from_path(root);
+    let root = Entry::from_path(root, options);
     let pool = match &root {
         Ok(entry) if entry.file_type.is_dir() && descend(entry) => {
             let path = Arc::from(entry.path());
@@ -216,6 +253,7 @@ pub fn walk(
                 HashMap::from([(0, AtomicUsize::new(0))]),
                 order,
                 Arc::new(move |_, entry| descend(entry)),
+                options,
             );
             start_jobs(
                 &pool,
@@ -267,6 +305,9 @@ impl Iterator for Walk {
 /// Walk multiple indexed roots without following symlinks.
 /// Unlike [`walk`], this preserves each root index and yields its completion as a [`RootEvent`].
 ///
+/// Each item in `roots` is `(root_index, path)`. `root_index` is a caller-chosen identifier passed
+/// to `descend` and returned with every [`RootEvent`] for that root, unique per root path.
+///
 /// # Panics
 ///
 /// Panics if two roots have the same index.
@@ -274,9 +315,54 @@ pub fn walk_roots(
     roots: impl IntoIterator<Item = (usize, PathBuf)>,
     threads: usize,
     order: Order,
+    options: Options,
     descend: impl Fn(usize, &Entry) -> bool + Send + Sync + 'static,
 ) -> RootWalk {
-    let roots = roots.into_iter().collect::<Vec<_>>();
+    start_root_walk(
+        roots.into_iter().collect(),
+        threads,
+        order,
+        descend,
+        |path: PathBuf| Entry::from_path(&path, options),
+        options,
+    )
+}
+
+/// Walk multiple indexed roots whose entries and metadata have already been collected.
+///
+/// Unlike [`walk_roots`], this reuses each supplied entry without querying its path again. Entry
+/// errors are yielded for their corresponding root, and each root retains its index and completion
+/// event just as it does with [`walk_roots`]. Supplied entries are re-rooted at depth zero before
+/// the predicate runs, and their descendants start at depth one.
+///
+/// # Panics
+///
+/// Panics if two roots have the same index.
+pub fn walk_root_entries(
+    roots: impl IntoIterator<Item = (usize, io::Result<Entry>)>,
+    threads: usize,
+    order: Order,
+    options: Options,
+    descend: impl Fn(usize, &Entry) -> bool + Send + Sync + 'static,
+) -> RootWalk {
+    start_root_walk(
+        roots.into_iter().collect(),
+        threads,
+        order,
+        descend,
+        std::convert::identity,
+        options,
+    )
+}
+
+fn start_root_walk<Root>(
+    roots: Vec<(usize, Root)>,
+    threads: usize,
+    order: Order,
+    descend: impl Fn(usize, &Entry) -> bool + Send + Sync + 'static,
+    prepare: impl Fn(Root) -> io::Result<Entry>,
+    options: Options,
+) -> RootWalk {
     let jobs_per_root = roots
         .iter()
         .map(|(root_idx, _)| (*root_idx, AtomicUsize::new(0)))
@@ -287,11 +373,16 @@ pub fn walk_roots(
         "root indices must be unique"
     );
     let descend = Arc::new(descend);
-    let (next, root_jobs) = begin_walks(roots, descend.as_ref());
+    let (next, root_jobs) = begin_walks(
+        roots
+            .into_iter()
+            .map(|(root_idx, root)| (root_idx, prepare(root))),
+        descend.as_ref(),
+    );
     let pool = if root_jobs.is_empty() {
         None
     } else {
-        let pool = start_pool(threads.max(1), jobs_per_root, order, descend);
+        let pool = start_pool(threads.max(1), jobs_per_root, order, descend, options);
         start_jobs(&pool, root_jobs);
         Some(pool)
     };
@@ -365,7 +456,7 @@ impl PoolShared {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl Entry {
     /// Return the full path to this entry.
     #[must_use]
@@ -374,7 +465,7 @@ impl Entry {
     }
 
     /// Create an entry from a filesystem path.
-    pub fn from_path(path: &Path) -> io::Result<Self> {
+    pub fn from_path(path: &Path, _options: Options) -> io::Result<Self> {
         let metadata = fs::symlink_metadata(path)?;
         Ok(Self {
             depth: 0,
@@ -405,7 +496,10 @@ fn start_pool(
     jobs_per_root: HashMap<usize, AtomicUsize>,
     order: Order,
     descend: Arc<Descend>,
+    options: Options,
 ) -> Pool {
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = options;
     let workers: Vec<_> = (0..threads).map(|_| Worker::new_lifo()).collect();
     let parkers: Vec<_> = (0..threads).map(|_| Parker::new()).collect();
     let (event_tx, event_rx) = sync_channel(threads * 2);
@@ -418,6 +512,8 @@ fn start_pool(
         active_roots: AtomicUsize::new(0),
         jobs_per_root,
         order,
+        #[cfg(any(windows, target_os = "macos"))]
+        options,
         unparkers: parkers
             .iter()
             .map(|parker| parker.unparker().clone())
@@ -448,14 +544,17 @@ fn start_pool(
 /// Prepare initial root events and directory jobs.
 /// Returns events in stack order for [`RootWalk::next`] to pop, plus jobs requiring a worker pool.
 fn begin_walks(
-    roots: impl IntoIterator<Item = (usize, PathBuf)>,
+    roots: impl IntoIterator<Item = (usize, io::Result<Entry>)>,
     descend: &Descend,
 ) -> (Vec<(usize, RootEvent)>, Vec<Job>) {
     let mut next = Vec::new();
     let mut jobs = Vec::new();
-    for (root_idx, path) in roots {
-        let entry = Entry::from_path(&path);
+    for (root_idx, mut entry) in roots {
+        if let Ok(entry) = &mut entry {
+            entry.depth = 0;
+        }
         let has_job = if let Ok(entry) = &entry
+            && entry.metadata.is_ok()
             && entry.file_type.is_dir()
             && descend(root_idx, entry)
         {
@@ -489,7 +588,7 @@ fn start_jobs(pool: &Pool, root_jobs: Vec<Job>) {
     debug_assert!(
         root_jobs.iter().all(|j| match j {
             Job::ReadDir { entry_depth, .. } => *entry_depth,
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             Job::StatCompletion { entry_depth, .. } => *entry_depth,
         } == 1),
         "the first jobs should be root jobs, so active_root counts match"
@@ -593,7 +692,7 @@ fn run_job(job: Job, worker: &Worker<Job>, shared: &PoolShared) {
                 read_dir_parent_first(root, path, entry_depth, worker, shared);
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         Job::StatCompletion {
             root_idx: root,
             path,
@@ -608,7 +707,7 @@ fn run_job(job: Job, worker: &Worker<Job>, shared: &PoolShared) {
 /// are emitted directly; the directory-read job completes after all chunks are queued.
 /// This adds parallelism within wide directories when metadata calls dominate. Both traversal
 /// orders already process separate directories concurrently, so typical trees may see no speedup.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_dir_completion(
     root_idx: usize,
     path: Arc<Path>,
@@ -684,12 +783,22 @@ fn read_dir_completion(
     finish_pending(root_idx, shared);
 }
 
+/// Open the platform-native reader with any traversal-specific metadata enabled.
+#[cfg(any(windows, target_os = "macos"))]
+fn native_read_dir(
+    path: Arc<Path>,
+    depth: usize,
+    shared: &PoolShared,
+) -> io::Result<NativeReadDir> {
+    NativeReadDir::open(path, depth, shared.options)
+}
+
 /// Read a directory for completion-order traversal.
 ///
-/// Unlike the non-Windows implementation, `windows::ReadDir` collects metadata while enumerating,
+/// Unlike the generic implementation, native readers collect metadata while enumerating,
 /// so complete entries are published directly in chunks instead of being split into stealable
 /// metadata jobs. This streams wide directories but keeps their metadata work on one worker.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn read_dir_completion(
     root_idx: usize,
     path: Arc<Path>,
@@ -697,7 +806,7 @@ fn read_dir_completion(
     worker: &Worker<Job>,
     shared: &PoolShared,
 ) {
-    let dir_entries = match windows::ReadDir::open(path, depth) {
+    let dir_entries = match native_read_dir(path, depth, shared) {
         Ok(entries) => entries,
         Err(err) => {
             if shared
@@ -741,7 +850,7 @@ fn read_dir_completion(
     finish_pending(root_idx, shared);
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn publish_completion_batch(
     root_idx: usize,
     entries: &mut Vec<io::Result<Entry>>,
@@ -769,7 +878,7 @@ fn publish_completion_batch(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn read_dir_parent_first(
     root_idx: usize,
     path: Arc<Path>,
@@ -777,7 +886,7 @@ fn read_dir_parent_first(
     worker: &Worker<Job>,
     shared: &PoolShared,
 ) {
-    let dir_entries = match windows::ReadDir::open(path, depth) {
+    let dir_entries = match native_read_dir(path, depth, shared) {
         Ok(entries) => entries,
         Err(err) => {
             finish_directory(root_idx, Err(err), Vec::new(), worker, shared);
@@ -801,7 +910,7 @@ fn read_dir_parent_first(
     finish_directory(root_idx, Ok(entries), jobs, worker, shared);
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn stat_entries_completion(
     root_idx: usize,
     path: Arc<Path>,
@@ -847,7 +956,7 @@ fn stat_entries_completion(
 /// order. Metadata within one directory is serial, although separate directories still run in
 /// parallel; this often matches completion-order performance unless wide-directory metadata is the
 /// bottleneck.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_dir_parent_first(
     root_idx: usize,
     path: Arc<Path>,
@@ -861,7 +970,7 @@ fn read_dir_parent_first(
 /// Convert a directory's entries on the worker that enumerates it, then schedule its children.
 ///
 /// Parent-first traversal converts each entry inline to preserve ordering.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_dir_inline(
     root_idx: usize,
     path: Arc<Path>,
@@ -981,16 +1090,22 @@ mod tests {
         let expected = expected.into_iter().map(PathBuf::from).collect::<Vec<_>>();
 
         for threads in [1, 4] {
-            let paths = walk(dir.path(), threads, Order::ParentFirst, |_| true)
-                .map(|entry| {
-                    entry
-                        .unwrap()
-                        .path()
-                        .strip_prefix(dir.path())
-                        .unwrap()
-                        .to_owned()
-                })
-                .collect::<Vec<_>>();
+            let paths = walk(
+                dir.path(),
+                threads,
+                Order::ParentFirst,
+                Options::default(),
+                |_| true,
+            )
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .strip_prefix(dir.path())
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
             let mut sorted_paths = paths.clone();
             sorted_paths.sort();
             assert_eq!(
@@ -1015,9 +1130,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("skip/child")).unwrap();
 
-        let paths = walk(dir.path(), 2, Order::Completion, |entry| {
-            entry.file_name != "skip"
-        })
+        let paths = walk(
+            dir.path(),
+            2,
+            Order::Completion,
+            Options::default(),
+            |entry| entry.file_name != "skip",
+        )
         .map(|entry| entry.unwrap().file_name)
         .collect::<Vec<_>>();
         assert_eq!(
@@ -1030,10 +1149,16 @@ mod tests {
         );
 
         assert!(
-            walk(&dir.path().join("missing"), 2, Order::Completion, |_| true)
-                .next()
-                .unwrap()
-                .is_err(),
+            walk(
+                &dir.path().join("missing"),
+                2,
+                Order::Completion,
+                Options::default(),
+                |_| true,
+            )
+            .next()
+            .unwrap()
+            .is_err(),
             "a missing root should be yielded as an I/O error"
         );
     }
@@ -1050,6 +1175,7 @@ mod tests {
             roots.iter().cloned().enumerate(),
             2,
             Order::Completion,
+            Options::default(),
             |_, _| true,
         )
         .collect::<Vec<_>>();
@@ -1092,6 +1218,134 @@ mod tests {
     }
 
     #[test]
+    fn prepared_roots_rebase_existing_descendants() {
+        let directory = tempfile::tempdir().unwrap();
+        let descendant = directory.path().join("descendant");
+        fs::create_dir(&descendant).unwrap();
+        let child = descendant.join("child");
+        fs::write(&child, b"nested file").unwrap();
+
+        let descendant_entry = walk(
+            directory.path(),
+            2,
+            Order::ParentFirst,
+            Options::default(),
+            |_| true,
+        )
+        .find_map(|entry| {
+            let entry = entry.unwrap();
+            (entry.path() == descendant).then_some(entry)
+        })
+        .expect("the initial walk should yield the descendant directory");
+        assert_eq!(descendant_entry.depth, 1);
+
+        let mut events = walk_root_entries(
+            [(7, Ok(descendant_entry))],
+            2,
+            Order::ParentFirst,
+            Options::default(),
+            |root_idx, entry| {
+                assert_eq!(root_idx, 7);
+                assert_eq!(entry.depth, 0, "the predicate should see a re-rooted entry");
+                true
+            },
+        );
+
+        let Some((7, RootEvent::Entry(Ok(mut root)))) = events.next() else {
+            panic!("the prepared descendant should be emitted as the new root");
+        };
+        assert_eq!(root.path(), descendant);
+        assert_eq!(
+            root.depth, 0,
+            "the entry originally found at depth 1 must become the new traversal root"
+        );
+
+        let Some((7, RootEvent::Entry(Ok(entry)))) = events.next() else {
+            panic!("the re-rooted directory should emit its child");
+        };
+        assert_eq!(entry.path(), child);
+        assert_eq!(
+            entry.depth, 1,
+            "the child depth must be relative to the prepared entry used as the new root"
+        );
+        assert_eq!(
+            events
+                .next()
+                .map(|(root_idx, event)| (root_idx, matches!(event, RootEvent::Finished))),
+            Some((7, true))
+        );
+        assert_eq!(
+            events.next().map(|(root_idx, _)| root_idx),
+            None,
+            "nothing left after the Finished event"
+        );
+
+        root.metadata = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let mut events = walk_root_entries(
+            [(7, Ok(root))],
+            2,
+            Order::ParentFirst,
+            Options::default(),
+            |_, _| panic!("a directory with inaccessible metadata must not be descended"),
+        );
+        let Some((7, RootEvent::Entry(Ok(root)))) = events.next() else {
+            panic!("the prepared directory must retain its metadata error");
+        };
+        let error = root
+            .metadata
+            .err()
+            .expect("the inaccessible root must retain its metadata error");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            events
+                .next()
+                .map(|(root_idx, event)| (root_idx, matches!(event, RootEvent::Finished))),
+            Some((7, true))
+        );
+        assert_eq!(events.next().map(|(root_idx, _)| root_idx), None);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn prepared_roots_reuse_native_directory_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file");
+        fs::write(&path, b"cached metadata").unwrap();
+        let expected_len = fs::metadata(&path).unwrap().len();
+
+        let entry = read_dir(directory.path(), Options::default())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.depth, 0);
+        assert_eq!(entry.path(), path);
+        fs::remove_file(&path).unwrap();
+
+        let mut events = walk_root_entries(
+            [(7, Ok(entry))],
+            1,
+            Order::Completion,
+            Options::default(),
+            |_, _| true,
+        );
+        let Some((7, RootEvent::Entry(Ok(entry)))) = events.next() else {
+            panic!(
+                "prepared root must be yielded without querying its removed path which would fail"
+            );
+        };
+        assert_eq!(entry.path(), path);
+        assert_eq!(entry.metadata.unwrap().len(), expected_len);
+        assert_eq!(
+            events
+                .next()
+                .map(|(root_idx, event)| (root_idx, matches!(event, RootEvent::Finished))),
+            Some((7, true))
+        );
+        assert_eq!(events.next().map(|(root_idx, _)| root_idx), None);
+    }
+
+    #[test]
     fn wide_walk_wakes_multiple_idle_workers() {
         let dir = tempfile::tempdir().unwrap();
         for idx in 0..32 {
@@ -1100,15 +1354,21 @@ mod tests {
 
         let worker_threads = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let seen_threads = Arc::clone(&worker_threads);
-        walk(dir.path(), 8, Order::Completion, move |entry| {
-            if entry.depth == 1 {
-                thread::sleep(std::time::Duration::from_millis(1));
-            } else if entry.depth == 2 {
-                seen_threads.lock().unwrap().insert(thread::current().id());
-                thread::sleep(std::time::Duration::from_millis(10));
-            }
-            true
-        })
+        walk(
+            dir.path(),
+            8,
+            Order::Completion,
+            Options::default(),
+            move |entry| {
+                if entry.depth == 1 {
+                    thread::sleep(std::time::Duration::from_millis(1));
+                } else if entry.depth == 2 {
+                    seen_threads.lock().unwrap().insert(thread::current().id());
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                true
+            },
+        )
         .for_each(drop);
 
         assert!(
@@ -1117,9 +1377,9 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn windows_metadata_is_collected_by_the_directory_worker() {
+    fn native_metadata_is_collected_by_the_directory_worker() {
         let dir = tempfile::tempdir().unwrap();
         for idx in 0..32 {
             fs::create_dir(dir.path().join(idx.to_string())).unwrap();
@@ -1127,25 +1387,31 @@ mod tests {
 
         let worker_threads = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let seen_threads = Arc::clone(&worker_threads);
-        walk(dir.path(), 8, Order::Completion, move |entry| {
-            if entry.depth == 1 {
-                seen_threads.lock().unwrap().insert(thread::current().id());
-                thread::sleep(std::time::Duration::from_millis(2));
-            }
-            true
-        })
+        walk(
+            dir.path(),
+            8,
+            Order::Completion,
+            Options::default(),
+            move |entry| {
+                if entry.depth == 1 {
+                    seen_threads.lock().unwrap().insert(thread::current().id());
+                    thread::sleep(std::time::Duration::from_millis(2));
+                }
+                true
+            },
+        )
         .for_each(drop);
 
         assert_eq!(
             worker_threads.lock().unwrap().len(),
             1,
-            "Windows directory-entry metadata should stay on the enumerating worker"
+            "native directory-entry metadata should stay on the enumerating worker"
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn windows_completion_streams_metadata_before_enumeration_finishes() {
+    fn native_completion_streams_metadata_before_enumeration_finishes() {
         let dir = tempfile::tempdir().unwrap();
         for idx in 0..=ENTRY_CHUNK_SIZE {
             fs::create_dir(dir.path().join(idx.to_string())).unwrap();
@@ -1155,18 +1421,25 @@ mod tests {
         let continue_rx = Arc::new(std::sync::Mutex::new(continue_rx));
         let seen = Arc::new(AtomicUsize::new(0));
         let seen_in_worker = Arc::clone(&seen);
-        let mut entries = walk(dir.path(), 2, Order::Completion, move |entry| {
-            if entry.depth == 1
-                && seen_in_worker.fetch_add(1, AtomicOrdering::Relaxed) == ENTRY_CHUNK_SIZE
-            {
-                continue_rx
+        let mut entries =
+            walk(
+                dir.path(),
+                2,
+                Order::Completion,
+                Options::default(),
+                move |entry| {
+                    if entry.depth == 1
+                        && seen_in_worker.fetch_add(1, AtomicOrdering::Relaxed) == ENTRY_CHUNK_SIZE
+                    {
+                        continue_rx
                     .lock()
                     .unwrap()
                     .recv_timeout(std::time::Duration::from_secs(2))
                     .expect("the first metadata batch should arrive before enumeration finishes");
-            }
-            true
-        });
+                    }
+                    true
+                },
+            );
 
         assert_eq!(
             entries.next().unwrap().unwrap().depth,

@@ -9,13 +9,19 @@ exe="$root/../$exe"
 source "$root/utilities.sh"
 snapshot="$root/snapshots"
 fixtures="$root/fixtures"
+export DUA_FORMAT=metric
+export DUA_COUNT_HARD_LINKS=true
+normalize_sizes() {
+  sed -E 's/[[:space:]]+[0-9]+([.][0-9]+)?[[:space:]]+([KMGT]i?B|[Bb])/ <SIZE> \2/g'
+}
+SNAPSHOT_FILTER=normalize_sizes
 
 SUCCESSFULLY=0
 WITH_FAILURE=1
 
 (with "a sample directory"
   (sandbox
-    cp -R "$fixtures/sample-01/" .
+    cp -R "$fixtures/sample-01/." .
     (with "no arguments"
       (with "no given path"
         (with "no subcommand"
@@ -43,6 +49,18 @@ WITH_FAILURE=1
               expect_run ${SUCCESSFULLY} "$exe" aggregate --no-sort
             }
           )
+        )
+      )
+      (with "--ignore-dirs naming a directory below the given one"
+        (when "specifying the 'aggregate' subcommand"
+          it "leaves that directory out, even though it was reached by expanding the given path" && {
+            WITH_SNAPSHOT="$snapshot/success-ignore-dirs-below-given-path" \
+            expect_run ${SUCCESSFULLY} "$exe" aggregate -i "$PWD/dir" .
+          }
+          it "still measures a directory named by --ignore-dirs when it is given explicitly" && {
+            WITH_SNAPSHOT="$snapshot/success-ignore-dirs-given-explicitly" \
+            expect_run ${SUCCESSFULLY} "$exe" aggregate -i "$PWD/dir" ./dir ./a
+          }
         )
       )
       (with "multiple given paths"
@@ -73,9 +91,9 @@ WITH_FAILURE=1
           )
           (with "a broken link in multiple roots"
             ln -s not-present broken-link
-            it "fails but lists valid paths" && {
+            it "handles the broken link while listing valid paths" && {
               WITH_SNAPSHOT="$snapshot/success-no-arguments-multiple-input-paths-one-broken-link" \
-              expect_run ${WITH_FAILURE} "$exe" aggregate --stats . dir broken-link ./dir/sub
+              expect_run ${SUCCESSFULLY} "$exe" aggregate --stats . dir broken-link ./dir/sub
             }
             rm broken-link
           )

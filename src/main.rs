@@ -22,7 +22,6 @@ use crossterm::{
 #[cfg(feature = "tui-crossplatform")]
 use tui::{Terminal, backend::CrosstermBackend};
 
-mod crossdev;
 #[cfg(feature = "tui-crossplatform")]
 mod interactive;
 mod options;
@@ -213,22 +212,15 @@ fn main() -> Result<()> {
             let config = dua::Config::load()?;
             let byte_format = traversal.byte_format(&config);
             let walk_options = walk_options_from(&traversal)?;
-            let input_paths = extract_paths_maybe_set_cwd(traversal.input, &walk_options)?;
-            let stdout = io::stdout();
-            let stdout_locked = stdout.lock();
-            let (res, stats) = dua::aggregate(
-                stdout_locked,
-                stderr_if_tty(),
+            let inputs = extract_aggregate_inputs_maybe_set_cwd(traversal.input, &walk_options)?;
+            run_aggregation(
+                inputs,
                 walk_options,
                 !no_total,
                 !no_sort,
                 byte_format,
-                input_paths,
-            )?;
-            if statistics {
-                writeln!(io::stderr(), "{stats:?}").ok();
-            }
-            res
+                statistics,
+            )?
         }
         Some(Completions { shell }) => {
             let mut cmd = options::Args::command();
@@ -250,23 +242,57 @@ fn main() -> Result<()> {
             let config = dua::Config::load()?;
             let byte_format = global_traversal.byte_format(&config);
             let walk_options = walk_options_from(&global_traversal)?;
-            let input_paths = extract_paths_maybe_set_cwd(global_traversal.input, &walk_options)?;
-            let stdout = io::stdout();
-            let stdout_locked = stdout.lock();
-            dua::aggregate(
-                stdout_locked,
-                stderr_if_tty(),
-                walk_options,
-                true,
-                true,
-                byte_format,
-                input_paths,
-            )?
-            .0
+            let inputs =
+                extract_aggregate_inputs_maybe_set_cwd(global_traversal.input, &walk_options)?;
+            run_aggregation(inputs, walk_options, true, true, byte_format, false)?
         }
     };
 
     process::exit(res.to_exit_code());
+}
+
+enum AggregateInputs {
+    Paths(Vec<PathBuf>),
+    #[cfg(any(windows, target_os = "macos"))]
+    Entries(Vec<dua_core::Entry>),
+}
+
+fn run_aggregation(
+    inputs: AggregateInputs,
+    walk_options: dua::WalkOptions,
+    compute_total: bool,
+    sort_by_size_in_bytes: bool,
+    byte_format: dua::ByteFormat,
+    show_statistics: bool,
+) -> Result<dua::WalkResult> {
+    let stdout = io::stdout();
+    let stdout_locked = stdout.lock();
+    let (result, statistics) = match inputs {
+        AggregateInputs::Paths(paths) => dua::aggregate(
+            stdout_locked,
+            stderr_if_tty(),
+            walk_options,
+            compute_total,
+            sort_by_size_in_bytes,
+            byte_format,
+            paths,
+        ),
+        #[cfg(any(windows, target_os = "macos"))]
+        AggregateInputs::Entries(entries) => dua::aggregate_entries(
+            stdout_locked,
+            stderr_if_tty(),
+            walk_options,
+            compute_total,
+            sort_by_size_in_bytes,
+            byte_format,
+            entries,
+        ),
+    }?;
+    if show_statistics {
+        writeln!(io::stderr(), "{statistics:?}").ok();
+    }
+
+    Ok(result)
 }
 
 fn is_default_ignore_dirs(list: &[PathBuf]) -> bool {
@@ -291,6 +317,9 @@ fn merge_traversal_args(
         format: global.format.or(subcommand.format),
         apparent_size: global.apparent_size || subcommand.apparent_size,
         count_hard_links: global.count_hard_links || subcommand.count_hard_links,
+        #[cfg(target_os = "macos")]
+        deduplicate_apfs_clones: global.deduplicate_apfs_clones
+            || subcommand.deduplicate_apfs_clones,
         stay_on_filesystem: global.stay_on_filesystem || subcommand.stay_on_filesystem,
         ignore_dirs: if is_default_ignore_dirs(&global.ignore_dirs) {
             subcommand.ignore_dirs.clone()
@@ -315,6 +344,10 @@ fn walk_options_from(traversal: &options::TraversalArgs) -> Result<dua::WalkOpti
         cross_filesystems: !traversal.stay_on_filesystem,
         ignore_dirs: canonicalize_ignore_dirs(&traversal.ignore_dirs),
         ignore_patterns: dua::IgnorePatterns::from_files(&traversal.ignore_from)?,
+        metadata_options: dua::TraversalOptions {
+            #[cfg(target_os = "macos")]
+            apfs_clone_metadata: traversal.deduplicate_apfs_clones,
+        },
     };
 
     if walk_options.threads == 0 {
@@ -324,26 +357,90 @@ fn walk_options_from(traversal: &options::TraversalArgs) -> Result<dua::WalkOpti
     Ok(walk_options)
 }
 
+fn extract_aggregate_inputs_maybe_set_cwd(
+    paths: Vec<PathBuf>,
+    walk_options: &dua::WalkOptions,
+) -> Result<AggregateInputs, io::Error> {
+    #[cfg(any(windows, target_os = "macos"))]
+    if paths.is_empty() || paths.len() == 1 && paths[0].is_dir() {
+        if let Some(path) = paths.first() {
+            std::env::set_current_dir(path)?;
+        }
+
+        let cwd = std::env::current_dir()?;
+        #[cfg(target_os = "macos")]
+        let cwd_device = (!walk_options.cross_filesystems)
+            .then(|| device_id(&cwd).ok())
+            .flatten();
+        let parent_path: std::sync::Arc<Path> = Path::new("").into();
+        let mut selected_entries = Vec::new();
+
+        let entries = dua_core::read_dir(Path::new("."), walk_options.metadata_options)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for mut entry in entries {
+            if entry.file_type.is_symlink() {
+                continue;
+            }
+            entry.parent_path = std::sync::Arc::clone(&parent_path);
+
+            #[cfg(target_os = "macos")]
+            if let Some(cwd_device) = cwd_device {
+                let same_device = entry.metadata.as_ref().map_or_else(
+                    |_| device_id(&entry.path()).map_or(true, |device| device == cwd_device),
+                    |metadata| metadata.dev() == cwd_device,
+                );
+                if !same_device {
+                    continue;
+                }
+            }
+
+            if walk_options
+                .ignore_patterns
+                .as_ref()
+                .is_some_and(|patterns| {
+                    patterns.is_excluded(Path::new(&entry.file_name), entry.file_type.is_dir())
+                })
+            {
+                continue;
+            }
+
+            if gix::path::realpath_opts(&entry.path(), &cwd, 32)
+                .is_ok_and(|path| walk_options.ignore_dirs.contains(&path))
+            {
+                continue;
+            }
+
+            selected_entries.push(entry);
+        }
+        selected_entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        return Ok(AggregateInputs::Entries(selected_entries));
+    }
+
+    extract_paths_maybe_set_cwd(paths, walk_options).map(AggregateInputs::Paths)
+}
+
 fn extract_paths_maybe_set_cwd(
     mut paths: Vec<PathBuf>,
     walk_options: &dua::WalkOptions,
 ) -> Result<Vec<PathBuf>, io::Error> {
     let cross_filesystems = walk_options.cross_filesystems;
+    // Paths were explicitly passed by the user on the command-line; per `--ignore-dirs`'s
+    // documented behavior, these are never subject to `-i`/`--ignore-dirs` filtering, only
+    // paths that we ourselves expand into roots below are.
+    let paths_were_expanded = paths.is_empty() || (paths.len() == 1 && paths[0].is_dir());
     if paths.len() == 1 && paths[0].is_dir() {
         std::env::set_current_dir(&paths[0])?;
         paths.clear();
     }
     let cwd = std::env::current_dir()?;
-    let device_id = crossdev::init(&cwd).ok();
+    let cwd_device = device_id(&cwd).ok();
 
     let paths = if paths.is_empty() {
-        cwd_dirlist().map(|paths| match device_id {
-            Some(device_id) if !cross_filesystems => paths
+        cwd_dirlist().map(|paths| match cwd_device {
+            Some(cwd_device) if !cross_filesystems => paths
                 .into_iter()
-                .filter(|p| match p.metadata() {
-                    Ok(meta) => crossdev::is_same_device(device_id, &meta),
-                    Err(_) => true,
-                })
+                .filter(|path| device_id(path).map_or(true, |device| device == cwd_device))
                 .collect(),
             _ => paths,
         })?
@@ -361,11 +458,31 @@ fn extract_paths_maybe_set_cwd(
                 .as_ref()
                 .is_none_or(|patterns| !patterns.excludes_input_path(path, &cwd))
         })
+        .filter(|path| {
+            if !paths_were_expanded || walk_options.ignore_dirs.is_empty() {
+                return true;
+            }
+            let is_ignored = gix::path::realpath_opts(path, &cwd, 32)
+                .is_ok_and(|real| walk_options.ignore_dirs.contains(&real));
+            !is_ignored
+        })
         .collect())
 }
 
+#[cfg(unix)]
+fn device_id(path: &Path) -> io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    path.metadata().map(|metadata| metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn device_id(_path: &Path) -> io::Result<u64> {
+    Ok(0)
+}
+
 fn cwd_dirlist() -> Result<Vec<PathBuf>, io::Error> {
-    let mut v: Vec<_> = fs::read_dir(".")?
+    let mut entries: Vec<_> = fs::read_dir(".")?
         .filter_map(|e| {
             e.ok()
                 .and_then(|e| e.path().strip_prefix(".").ok().map(ToOwned::to_owned))
@@ -379,8 +496,9 @@ fn cwd_dirlist() -> Result<Vec<PathBuf>, io::Error> {
             true
         })
         .collect();
-    v.sort();
-    Ok(v)
+
+    entries.sort();
+    Ok(entries)
 }
 
 fn edit_config() -> Result<()> {
@@ -517,6 +635,8 @@ mod tests {
             format: None,
             apparent_size: true,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![],
             ignore_from: vec![PathBuf::from("global-ignore")],
@@ -528,6 +648,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: true,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: true,
             ignore_dirs: vec![],
             ignore_from: vec![PathBuf::from("subcommand-ignore")],
@@ -554,6 +676,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![],
             ignore_from: vec![],
@@ -565,6 +689,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![],
             ignore_from: vec![],
@@ -583,6 +709,8 @@ mod tests {
             format: Some(super::options::ByteFormat::MB),
             apparent_size: true,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: true,
             stay_on_filesystem: true,
             ignore_dirs: vec![],
             ignore_from: vec![],
@@ -594,6 +722,8 @@ mod tests {
             format: Some(super::options::ByteFormat::GB),
             apparent_size: false,
             count_hard_links: true,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![],
             ignore_from: vec![],
@@ -605,6 +735,8 @@ mod tests {
         assert_eq!(merged.format, Some(super::options::ByteFormat::MB));
         assert!(merged.apparent_size);
         assert!(merged.count_hard_links);
+        #[cfg(target_os = "macos")]
+        assert!(merged.deduplicate_apfs_clones);
         assert!(merged.stay_on_filesystem);
     }
 
@@ -615,6 +747,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![PathBuf::from("/custom-global-ignore")],
             ignore_from: vec![],
@@ -626,6 +760,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![PathBuf::from("/custom-subcommand-ignore")],
             ignore_from: vec![],
@@ -644,6 +780,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: super::options::DEFAULT_IGNORE_DIRS
                 .iter()
@@ -658,6 +796,8 @@ mod tests {
             format: None,
             apparent_size: false,
             count_hard_links: false,
+            #[cfg(target_os = "macos")]
+            deduplicate_apfs_clones: false,
             stay_on_filesystem: false,
             ignore_dirs: vec![PathBuf::from("/custom-subcommand-ignore")],
             ignore_from: vec![],
