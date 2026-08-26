@@ -14,6 +14,9 @@ export DUA_COUNT_HARD_LINKS=true
 normalize_sizes() {
   sed -E 's/[[:space:]]+[0-9]+([.][0-9]+)?[[:space:]]+([KMGT]i?B|[Bb])/ <SIZE> \2/g'
 }
+normalize_tree_sizes() {
+  sed -E 's/[[:space:]]+[0-9]+([.][0-9]+)?[[:space:]]+([KMGT]i?B|[Bb])/ <SIZE> <UNIT>/g' | LC_ALL=C sort -k3
+}
 SNAPSHOT_FILTER=normalize_sizes
 
 SUCCESSFULLY=0
@@ -35,6 +38,13 @@ WITH_FAILURE=1
             it "produces a human-readable (metric) aggregate of everything within the current directory, with total" && {
               WITH_SNAPSHOT="$snapshot/success-no-arguments" \
               expect_run ${SUCCESSFULLY} "$exe" aggregate
+            }
+          )
+          (with "tree depth"
+            it "produces an indented tree through the requested depth" && {
+              SNAPSHOT_FILTER=normalize_tree_sizes \
+              WITH_SNAPSHOT="$snapshot/success-tree-depth" \
+              expect_run ${SUCCESSFULLY} "$exe" aggregate --depth 3
             }
           )
           (with "a single file argument"
@@ -87,6 +97,12 @@ WITH_FAILURE=1
             it "produces a human-readable aggregate, and statistics about the iteration in RON" && {
               WITH_SNAPSHOT="$snapshot/success-no-arguments-multiple-input-paths-statistics" \
               expect_run ${SUCCESSFULLY} "$exe" aggregate --stats . . dir ./dir/ ./dir/sub
+            }
+          )
+          (with "a relative root whose last component is '..'"
+            it "traverses it like any other directory" && {
+              WITH_SNAPSHOT="$snapshot/success-multiple-input-paths-with-parent-component" \
+              expect_run ${SUCCESSFULLY} "$exe" aggregate --no-sort dir/.. dir
             }
           )
           (with "a broken link in multiple roots"

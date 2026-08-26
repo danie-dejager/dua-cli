@@ -181,6 +181,20 @@ about 6%.
 Files that share only some blocks are not deduplicated, and `--apparent-size`
 still reports each file's logical length.
 
+### Tree output
+
+By default `aggregate` prints a flat listing. Pass `--depth N` to instead print an indented tree
+that descends `N` levels into each input, which is handy for sharing a disk-usage report without
+opening interactive mode. The inputs form the first level, so `--depth 1` lists just them, the same
+set of entries the flat listing shows.
+
+```bash
+# show each top-level entry and one level below it
+dua aggregate --depth 2
+```
+
+`--no-sort` and `--no-total` work the same way they do for the flat listing.
+
 ### Excluding paths with a pattern file
 
 `--ignore-from FILE` reads gitignore-style patterns and leaves everything they match out of the
@@ -227,6 +241,17 @@ Japanese (`ja`) is also available when the locale uses UTF-8 or omits the codese
 
 ```bash
 LANG=ja_JP.UTF-8 dua i   # then press '?' for the Japanese help screen
+```
+
+### Flame graphs
+
+The `aggregate --stack` option prints the traversal as folded stacks - the "collapsed" format read
+by flame-graph tools like [`inferno`](https://github.com/jonhoo/inferno).
+Each line is an entry's path with `;` between its components, a space, and its size
+in bytes, so an interactive drill-down can be turned into a single shareable SVG:
+
+```bash
+dua aggregate --stack | inferno-flamegraph > disk-usage.svg
 ```
 
 ### Configuration

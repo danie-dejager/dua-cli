@@ -207,20 +207,51 @@ fn main() -> Result<()> {
             no_total,
             no_sort,
             statistics,
+            stack,
+            depth,
         }) => {
             let traversal = merge_traversal_args(&global_traversal, &subcommand_traversal);
-            let config = dua::Config::load()?;
-            let byte_format = traversal.byte_format(&config);
             let walk_options = walk_options_from(&traversal)?;
-            let inputs = extract_aggregate_inputs_maybe_set_cwd(traversal.input, &walk_options)?;
-            run_aggregation(
-                inputs,
-                walk_options,
-                !no_total,
-                !no_sort,
-                byte_format,
-                statistics,
-            )?
+            if stack {
+                let inputs = extract_paths_maybe_set_cwd(traversal.input, &walk_options)?;
+                let stdout = io::stdout();
+                dua::stacks(
+                    stdout.lock(),
+                    stderr_if_tty(),
+                    walk_options,
+                    inputs,
+                    depth.map(|depth| depth.saturating_sub(1)),
+                )?
+            } else if let Some(depth) = depth {
+                let config = dua::Config::load()?;
+                let byte_format = traversal.byte_format(&config);
+                let paths = extract_paths_maybe_set_cwd(traversal.input, &walk_options)?;
+                let stdout = io::stdout();
+                let out_supports_colors = stdout.is_terminal();
+                dua::aggregate_tree(
+                    (stdout.lock(), out_supports_colors),
+                    stderr_if_tty(),
+                    walk_options,
+                    byte_format,
+                    paths,
+                    depth.saturating_sub(1),
+                    !no_total,
+                    !no_sort,
+                )?
+            } else {
+                let config = dua::Config::load()?;
+                let byte_format = traversal.byte_format(&config);
+                let inputs =
+                    extract_aggregate_inputs_maybe_set_cwd(traversal.input, &walk_options)?;
+                run_aggregation(
+                    inputs,
+                    walk_options,
+                    !no_total,
+                    !no_sort,
+                    byte_format,
+                    statistics,
+                )?
+            }
         }
         Some(Completions { shell }) => {
             let mut cmd = options::Args::command();
@@ -266,10 +297,11 @@ fn run_aggregation(
     show_statistics: bool,
 ) -> Result<dua::WalkResult> {
     let stdout = io::stdout();
+    let out_supports_colors = stdout.is_terminal();
     let stdout_locked = stdout.lock();
     let (result, statistics) = match inputs {
         AggregateInputs::Paths(paths) => dua::aggregate(
-            stdout_locked,
+            (stdout_locked, out_supports_colors),
             stderr_if_tty(),
             walk_options,
             compute_total,
@@ -279,7 +311,7 @@ fn run_aggregation(
         ),
         #[cfg(any(windows, target_os = "macos"))]
         AggregateInputs::Entries(entries) => dua::aggregate_entries(
-            stdout_locked,
+            (stdout_locked, out_supports_colors),
             stderr_if_tty(),
             walk_options,
             compute_total,
@@ -346,7 +378,7 @@ fn walk_options_from(traversal: &options::TraversalArgs) -> Result<dua::WalkOpti
         ignore_patterns: dua::IgnorePatterns::from_files(&traversal.ignore_from)?,
         metadata_options: dua::TraversalOptions {
             #[cfg(target_os = "macos")]
-            apfs_clone_metadata: traversal.deduplicate_apfs_clones,
+            apfs_clone_metadata: traversal.deduplicate_apfs_clones && !traversal.apparent_size,
         },
     };
 
@@ -375,10 +407,8 @@ fn extract_aggregate_inputs_maybe_set_cwd(
         let parent_path: std::sync::Arc<Path> = Path::new("").into();
         let mut selected_entries = Vec::new();
 
-        let entries = dua_core::read_dir(Path::new("."), walk_options.metadata_options)?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        for mut entry in entries {
+        for entry in dua_core::read_dir(Path::new("."), walk_options.metadata_options)? {
+            let mut entry = entry?;
             if entry.file_type.is_symlink() {
                 continue;
             }
@@ -405,9 +435,7 @@ fn extract_aggregate_inputs_maybe_set_cwd(
                 continue;
             }
 
-            if gix::path::realpath_opts(&entry.path(), &cwd, 32)
-                .is_ok_and(|path| walk_options.ignore_dirs.contains(&path))
-            {
+            if walk_options.is_ignored_directory(Path::new(&entry.file_name), &cwd) {
                 continue;
             }
 
@@ -458,14 +486,7 @@ fn extract_paths_maybe_set_cwd(
                 .as_ref()
                 .is_none_or(|patterns| !patterns.excludes_input_path(path, &cwd))
         })
-        .filter(|path| {
-            if !paths_were_expanded || walk_options.ignore_dirs.is_empty() {
-                return true;
-            }
-            let is_ignored = gix::path::realpath_opts(path, &cwd, 32)
-                .is_ok_and(|real| walk_options.ignore_dirs.contains(&real));
-            !is_ignored
-        })
+        .filter(|path| !paths_were_expanded || !walk_options.is_ignored_directory(path, &cwd))
         .collect())
 }
 
@@ -625,6 +646,38 @@ mod tests {
             fs::read_to_string(&path).expect("default config"),
             dua::Config::default_file_content()
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn walk_options_only_request_apfs_clones_for_allocated_size() {
+        for (apparent_size, deduplicate_apfs_clones, expected_clone_metadata) in [
+            (false, false, false),
+            (false, true, true),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            let traversal = super::options::TraversalArgs {
+                threads: 1,
+                format: None,
+                apparent_size,
+                count_hard_links: false,
+                deduplicate_apfs_clones,
+                stay_on_filesystem: false,
+                ignore_dirs: vec![],
+                ignore_from: vec![],
+                input: vec![],
+            };
+            let walk_options =
+                super::walk_options_from(&traversal).expect("valid traversal options");
+
+            assert_eq!(
+                walk_options.metadata_options.apfs_clone_metadata, expected_clone_metadata,
+                "APFS clone metadata is unnecessary for apparent sizes, which use logical file lengths\n\
+                 apparent_size={apparent_size}\n\
+                 deduplicate_apfs_clones={deduplicate_apfs_clones}"
+            );
+        }
     }
 
     #[test]

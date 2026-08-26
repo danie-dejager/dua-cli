@@ -109,12 +109,14 @@ impl FileType {
 /// macOS metadata obtained during native directory enumeration.
 #[derive(Clone, Copy)]
 pub struct Metadata {
+    /// Logical file or directory length.
     len: u64,
+    /// Total allocation, including resource forks and other extended metadata.
     allocated_size: u64,
-    /// Data-fork allocation and clone identity, present only when extended metadata was requested
-    /// and supported by the filesystem. Unlike `ino`, which identifies hard links to one file,
-    /// the clone identity can be shared by copy-on-write clones with distinct inodes.
-    data_fork: Option<DataFork>,
+    /// Data-fork allocation, or total allocation when extended metadata is unavailable.
+    data_allocated_size: u64,
+    /// Unlike `ino`, clone identity can be shared by copy-on-write clones with distinct inodes.
+    clone_id: Option<NonZeroU64>,
     modified: Option<SystemTime>,
     dev: u64,
     ino: u64,
@@ -126,11 +128,13 @@ impl Metadata {
     fn from_std(metadata: &fs::Metadata, data_fork: Option<DataFork>) -> Self {
         let allocated_size = metadata.blocks().saturating_mul(STAT_BLOCK_BYTES);
         let file_type = FileType::from_std(metadata.file_type());
+        let data_fork =
+            data_fork.filter(|fork| file_type.is_file() && fork.allocated_size <= allocated_size);
         Self {
             len: metadata.len(),
             allocated_size,
-            data_fork: data_fork
-                .filter(|fork| file_type.is_file() && fork.allocated_size <= allocated_size),
+            data_allocated_size: data_fork.map_or(allocated_size, |fork| fork.allocated_size),
+            clone_id: data_fork.and_then(|fork| fork.clone_id),
             modified: metadata.modified().ok(),
             dev: metadata.dev(),
             ino: metadata.ino(),
@@ -155,8 +159,7 @@ impl Metadata {
     /// Return data-fork allocation, or total allocation when separate fork metadata is unavailable.
     #[must_use]
     pub fn data_allocated_size(&self) -> u64 {
-        self.data_fork
-            .map_or(self.allocated_size, |fork| fork.allocated_size)
+        self.data_allocated_size
     }
 
     /// Return the allocated size as 512-byte filesystem accounting blocks.
@@ -185,8 +188,8 @@ impl Metadata {
 
     /// Return the number of hard links to this entry.
     ///
-    /// Bulk-enumerated directories use `ATTR_DIR_LINKCOUNT`, which `getattrlist(2)` says
-    /// excludes historical `.` and `..` links and can therefore differ from `stat(2)`.
+    /// Directories use path metadata because the Apple FTS contract does not synthesize their
+    /// `stat` fields from bulk attributes.
     #[must_use]
     pub fn nlink(&self) -> u64 {
         self.nlink
@@ -203,7 +206,7 @@ impl Metadata {
     /// Clone identifiers are meaningful only within the same filesystem device.
     #[must_use]
     pub fn clone_id(&self) -> Option<NonZeroU64> {
-        self.data_fork.and_then(|fork| fork.clone_id)
+        self.clone_id
     }
 }
 
@@ -250,8 +253,19 @@ impl ReadDir {
     /// because `self.fallback` was initialized. Returns `false` when the directory is exhausted.
     fn refill(&mut self) -> io::Result<bool> {
         loop {
-            let mut attributes =
-                requested_attributes(self.listing_error.is_some(), self.extended_attributes);
+            let list_only = self.listing_error.is_some();
+            let include_apfs = self.extended_attributes && !list_only;
+            let mut attributes = requested_attributes(list_only, include_apfs);
+            let mut options = if list_only {
+                0
+            } else {
+                u64::from(libc::FSOPT_PACK_INVAL_ATTRS)
+            };
+            if include_apfs {
+                options |= u64::from(libc::FSOPT_ATTR_CMN_EXTENDED);
+            }
+            // Apple FTS, and therefore macOS `du`, uses packed invalid attributes when collecting
+            // full metadata. APFS clone metadata is an optional extension of that same layout.
             // SAFETY: the directory descriptor is owned and remains open, `attributes` is a valid
             // initialized Darwin attrlist, and the aligned buffer is writable for its exact size.
             let count = unsafe {
@@ -260,11 +274,7 @@ impl ReadDir {
                     (&raw mut attributes).cast(),
                     self.buffer.as_mut_bytes().as_mut_ptr().cast(),
                     self.buffer.as_bytes().len(),
-                    if self.extended_attributes {
-                        u64::from(libc::FSOPT_ATTR_CMN_EXTENDED)
-                    } else {
-                        0
-                    },
+                    options,
                 )
             };
             if count > 0 {
@@ -355,7 +365,11 @@ impl ReadDir {
         self.offset = end;
         self.remaining -= 1;
 
-        let mut parsed = parse_record(record)?;
+        let mut parsed = parse_record(
+            record,
+            self.listing_error.is_none(),
+            self.extended_attributes,
+        )?;
         let file_name = parsed
             .file_name
             .take()
@@ -371,17 +385,14 @@ impl ReadDir {
         let metadata = if let Some(error) = metadata_error {
             Err(io::Error::from_raw_os_error(error))
         } else {
-            if parsed.object_type.is_none() {
-                return Err(invalid_data("macOS directory record has no object type"));
-            }
             let metadata_from_path = || {
                 fs::symlink_metadata(self.parent_path.join(&file_name))
                     .map(|metadata| Metadata::from_std(&metadata, None))
             };
-            // XNU uses NOCROSSMOUNT for bulk lookup; stat the visible mount or firmlink.
-            let special_mount = parsed.flags & SF_FIRMLINK != 0
-                || parsed.mount_status & libc::DIR_MNTSTATUS_MNTPOINT != 0;
-            if special_mount {
+            // XNU uses NOCROSSMOUNT for bulk lookup. Directories fall through the FTS contract
+            // below, while firmlinks need an explicit path lookup to expose the visible target.
+            let firmlink = parsed.flags & SF_FIRMLINK != 0;
+            if firmlink || !parsed.satisfies_fts_stat_contract() {
                 metadata_from_path()
             } else {
                 parsed.metadata(file_type).or_else(|_| metadata_from_path())
@@ -449,7 +460,7 @@ fn clone_attributes_at(path: &Path, metadata: &fs::Metadata) -> Option<DataFork>
     let bytes = buffer.as_bytes();
     let length = read_record_length(bytes).ok()?;
     let record = bytes.get(..length)?;
-    let parsed = parse_record(record).ok()?;
+    let parsed = parse_record(record, false, true).ok()?;
     if parsed.device != Some(metadata.dev()) || parsed.inode != Some(metadata.ino()) {
         return None;
     }
@@ -458,32 +469,28 @@ fn clone_attributes_at(path: &Path, metadata: &fs::Metadata) -> Option<DataFork>
 
 impl ParsedRecord {
     fn metadata(&self, file_type: FileType) -> io::Result<Metadata> {
-        let (len, allocated_size, nlink) = if file_type.is_dir() {
-            (
-                self.directory_length
-                    .ok_or_else(|| invalid_data("missing directory length"))?,
-                self.directory_allocated
-                    .ok_or_else(|| invalid_data("missing directory allocation"))?,
-                self.directory_links
-                    .ok_or_else(|| invalid_data("missing directory hard-link count"))?,
-            )
-        } else {
-            (
-                self.file_length
-                    .ok_or_else(|| invalid_data("missing file length"))?,
-                self.file_allocated
-                    .ok_or_else(|| invalid_data("missing file allocation"))?,
-                self.file_links
-                    .ok_or_else(|| invalid_data("missing file hard-link count"))?,
-            )
-        };
+        debug_assert!(
+            !file_type.is_dir(),
+            "directories must fail the Apple FTS stat contract and use path metadata"
+        );
+        let len = self
+            .file_length
+            .ok_or_else(|| invalid_data("missing file length"))?;
+        let allocated_size = self
+            .file_allocated
+            .ok_or_else(|| invalid_data("missing file allocation"))?;
+        let nlink = self
+            .file_links
+            .ok_or_else(|| invalid_data("missing file hard-link count"))?;
+        let data_fork = self
+            .data_fork()
+            .filter(|fork| file_type.is_file() && fork.allocated_size <= allocated_size);
 
         Ok(Metadata {
             len,
             allocated_size,
-            data_fork: self
-                .data_fork()
-                .filter(|fork| file_type.is_file() && fork.allocated_size <= allocated_size),
+            data_allocated_size: data_fork.map_or(allocated_size, |fork| fork.allocated_size),
+            clone_id: data_fork.and_then(|fork| fork.clone_id),
             modified: Some(
                 self.modified
                     .ok_or_else(|| invalid_data("missing modification timestamp"))?,

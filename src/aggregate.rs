@@ -24,11 +24,51 @@ fn size_on_disk(entry: &crate::walk::Entry, metadata: &crate::walk::Metadata) ->
 
 const CLEAR_CURRENT_LINE: &str = "\x1b[2K\r";
 
+/// Throttles transient traversal entry counts to an optional writer and clears the progress line.
+pub(crate) struct TraversalProgress<W: io::Write> {
+    writer: Option<W>,
+    throttle: Throttle,
+    // Only clear the line if progress was visible before as we printed it.
+    visible: bool,
+}
+
+impl<W: io::Write> TraversalProgress<W> {
+    pub(crate) fn new(writer: Option<W>) -> Self {
+        Self {
+            writer,
+            throttle: Throttle::new(Duration::from_millis(100), Duration::from_secs(1).into()),
+            visible: false,
+        }
+    }
+
+    pub(crate) fn update(&mut self, entries: u64) {
+        if self.throttle.can_update() {
+            self.write(entries);
+        }
+    }
+
+    fn write(&mut self, entries: u64) {
+        if let Some(writer) = self.writer.as_mut() {
+            write!(writer, "Enumerating {entries} items\r").ok();
+            self.visible = true;
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if self.visible {
+            if let Some(writer) = self.writer.as_mut() {
+                write!(writer, "{CLEAR_CURRENT_LINE}").ok();
+            }
+            self.visible = false;
+        }
+    }
+}
+
 /// Accumulated output state for one input root, retained until roots can be emitted in the
 /// requested order.
 struct Aggregate {
     /// Path printed for this root.
-    path: PathBuf,
+    display_path: PathBuf,
     /// Sum of the accepted entries' apparent or allocated sizes.
     bytes: u128,
     /// Number of root, entry, metadata, or size-query errors encountered.
@@ -47,7 +87,7 @@ impl Aggregate {
 /// If `compute_total` is set, it will write an additional line with the total size across all given `paths`.
 /// If `sort_by_size_in_bytes` is set, we will sort all sizes (ascending) before outputting them.
 pub fn aggregate(
-    out: impl io::Write,
+    out: (impl io::Write, bool),
     err: Option<impl io::Write>,
     walk_options: WalkOptions,
     compute_total: bool,
@@ -55,6 +95,7 @@ pub fn aggregate(
     byte_format: ByteFormat,
     paths: Vec<PathBuf>,
 ) -> Result<(WalkResult, Statistics)> {
+    let cwd = std::env::current_dir()?;
     aggregate_inner(
         out,
         err,
@@ -62,7 +103,11 @@ pub fn aggregate(
         compute_total,
         sort_by_size_in_bytes,
         byte_format,
-        paths.into_iter().map(|path| (path, None)),
+        paths.into_iter().map(|display_path| {
+            let path = gix::path::normalize(display_path.as_path().into(), &cwd)
+                .map_or_else(|| display_path.clone(), |path| path.into_owned());
+            (path, display_path, None)
+        }),
     )
 }
 
@@ -72,7 +117,7 @@ pub fn aggregate(
 /// traversal behavior of [`aggregate`].
 #[cfg(any(windows, target_os = "macos"))]
 pub fn aggregate_entries(
-    out: impl io::Write,
+    out: (impl io::Write, bool),
     err: Option<impl io::Write>,
     walk_options: WalkOptions,
     compute_total: bool,
@@ -87,38 +132,41 @@ pub fn aggregate_entries(
         compute_total,
         sort_by_size_in_bytes,
         byte_format,
-        entries.into_iter().map(|entry| (entry.path(), Some(entry))),
+        entries.into_iter().map(|entry| {
+            let path = entry.path();
+            (path.clone(), path, Some(entry))
+        }),
     )
 }
 
 fn aggregate_inner(
-    mut out: impl io::Write,
-    mut err: Option<impl io::Write>,
+    out: (impl io::Write, bool),
+    err: Option<impl io::Write>,
     walk_options: WalkOptions,
     compute_total: bool,
     sort_by_size_in_bytes: bool,
     byte_format: ByteFormat,
-    inputs: impl ExactSizeIterator<Item = (PathBuf, Option<crate::walk::Entry>)>,
+    inputs: impl ExactSizeIterator<Item = (PathBuf, PathBuf, Option<crate::walk::Entry>)>,
 ) -> Result<(WalkResult, Statistics)> {
+    let (mut out, out_supports_colors) = out;
+    let output_options = (byte_format, out_supports_colors);
     #[cfg(target_os = "macos")]
     let apfs_clone_accounting = walk_options.metadata_options.apfs_clone_metadata;
     let mut res = WalkResult::default();
-    let mut stats = Statistics {
-        smallest_file_in_bytes: u128::MAX,
-        ..Default::default()
-    };
+    let mut stats = Statistics::default();
+    let mut smallest_file_in_bytes = None;
     let num_roots = inputs.len();
     let mut aggregates = Vec::with_capacity(num_roots);
     let mut device_ids = vec![0; num_roots];
     let mut completed = vec![false; num_roots];
     let mut roots = Vec::with_capacity(num_roots);
     let has_ignore_patterns = walk_options.ignore_patterns.is_some();
-    for (root_idx, (path, prepared_entry)) in inputs.enumerate() {
+    for (root_idx, (path, display_path, prepared_entry)) in inputs.enumerate() {
         #[cfg(not(any(windows, target_os = "macos")))]
         let _ = prepared_entry;
 
         aggregates.push(Aggregate {
-            path: path.clone(),
+            display_path,
             bytes: 0,
             errors: 0,
             is_file: false,
@@ -152,8 +200,7 @@ fn aggregate_inner(
         });
     }
     let mut inodes = InodeFilter::default();
-    let progress = Throttle::new(Duration::from_millis(100), Duration::from_secs(1).into());
-    let mut progress_visible = false;
+    let mut progress = TraversalProgress::new(err);
     let mut next_output = 0;
 
     // Shared hard links and, when enabled, cloned data belong to the first root that reaches them.
@@ -167,12 +214,11 @@ fn aggregate_inner(
                 if !sort_by_size_in_bytes {
                     output_completed(
                         &mut out,
-                        &mut err,
                         &aggregates,
                         &completed,
                         &mut next_output,
-                        &mut progress_visible,
-                        byte_format,
+                        &mut progress,
+                        output_options,
                     )?;
                 }
                 continue;
@@ -180,12 +226,7 @@ fn aggregate_inner(
         };
         let aggregate = &mut aggregates[root_idx];
         stats.entries_traversed += 1;
-        progress.throttled(|| {
-            if let Some(err) = err.as_mut() {
-                write!(err, "Enumerating {} items\r", stats.entries_traversed).ok();
-                progress_visible = true;
-            }
-        });
+        progress.update(stats.entries_traversed);
         match entry {
             Ok(entry) => {
                 if entry.depth == 0 {
@@ -223,7 +264,9 @@ fn aggregate_inner(
                     }
                 });
                 stats.largest_file_in_bytes = stats.largest_file_in_bytes.max(file_size);
-                stats.smallest_file_in_bytes = stats.smallest_file_in_bytes.min(file_size);
+                smallest_file_in_bytes = smallest_file_in_bytes
+                    .map_or(file_size, |size: u128| size.min(file_size))
+                    .into();
                 aggregate.bytes += file_size;
             }
             Err(_) => aggregate.errors += 1,
@@ -233,27 +276,22 @@ fn aggregate_inner(
     let total = aggregates.iter().map(|aggregate| aggregate.bytes).sum();
     res.num_errors = aggregates.iter().map(|aggregate| aggregate.errors).sum();
 
-    if stats.entries_traversed == 0 {
-        stats.smallest_file_in_bytes = 0;
-    }
+    stats.smallest_file_in_bytes = smallest_file_in_bytes.unwrap_or_default();
 
-    if progress_visible && let Some(err) = err.as_mut() {
-        write!(err, "{CLEAR_CURRENT_LINE}").ok();
-    }
+    progress.clear();
 
     if sort_by_size_in_bytes {
-        output_sorted(&mut out, aggregates, byte_format)?;
+        output_sorted(&mut out, aggregates, output_options)?;
     } else {
         // Be sure failed roots are also printed, as they lack a `Finished` event,
         // the traversal never starts on them.
         output_completed(
             &mut out,
-            &mut err,
             &aggregates,
             &completed,
             &mut next_output,
-            &mut progress_visible,
-            byte_format,
+            &mut progress,
+            output_options,
         )?;
         debug_assert_eq!(next_output, num_roots);
     }
@@ -261,6 +299,7 @@ fn aggregate_inner(
     if num_roots > 1 && compute_total {
         output_colored_path(
             &mut out,
+            out_supports_colors,
             Path::new("total"),
             total,
             res.num_errors,
@@ -273,29 +312,25 @@ fn aggregate_inner(
 
 /// Write the contiguous run of completed roots starting at `next_output`, preserving input order.
 /// Clears a visible progress line before writing the first completed root.
-/// `progress_visible` tracks if progress information is currently shown, taking up the last line.
 fn output_completed<W: io::Write, E: io::Write>(
     out: &mut W,
-    err: &mut Option<E>,
     aggregates: &[Aggregate],
     completed: &[bool],
     next_output: &mut usize,
-    progress_visible: &mut bool,
-    byte_format: ByteFormat,
+    progress: &mut TraversalProgress<E>,
+    (byte_format, out_supports_colors): (ByteFormat, bool),
 ) -> io::Result<()> {
     let must_report_completed_path = completed.get(*next_output).copied() == Some(true);
     // Remove the transient progress line before writing permanent results to the terminal.
-    if must_report_completed_path && *progress_visible {
-        if let Some(err) = err.as_mut() {
-            write!(err, "{CLEAR_CURRENT_LINE}").ok();
-        }
-        *progress_visible = false;
+    if must_report_completed_path {
+        progress.clear();
     }
     while completed.get(*next_output).copied() == Some(true) {
         let aggregate = &aggregates[*next_output];
         output_colored_path(
             out,
-            &aggregate.path,
+            out_supports_colors,
+            &aggregate.display_path,
             aggregate.bytes,
             aggregate.errors,
             aggregate.path_color(),
@@ -309,13 +344,14 @@ fn output_completed<W: io::Write, E: io::Write>(
 fn output_sorted(
     out: &mut impl io::Write,
     mut aggregates: Vec<Aggregate>,
-    byte_format: ByteFormat,
+    (byte_format, out_supports_colors): (ByteFormat, bool),
 ) -> std::result::Result<(), io::Error> {
     aggregates.sort_by_key(|aggregate| aggregate.bytes);
     for aggregate in aggregates {
         output_colored_path(
             out,
-            &aggregate.path,
+            out_supports_colors,
+            &aggregate.display_path,
             aggregate.bytes,
             aggregate.errors,
             aggregate.path_color(),
@@ -325,8 +361,9 @@ fn output_sorted(
     Ok(())
 }
 
-fn output_colored_path(
+pub(crate) fn output_colored_path(
     out: &mut impl io::Write,
+    out_supports_colors: bool,
     path: impl AsRef<Path>,
     num_bytes: u128,
     num_errors: u64,
@@ -334,7 +371,6 @@ fn output_colored_path(
     byte_format: ByteFormat,
 ) -> std::result::Result<(), io::Error> {
     let size = byte_format.display(num_bytes).to_string();
-    let size = size.green();
     let size_width = byte_format.width();
     let path = path.as_ref().display();
 
@@ -347,6 +383,11 @@ fn output_colored_path(
         String::new()
     };
 
+    if !out_supports_colors {
+        return writeln!(out, "{size:>size_width$} {path}{errors}");
+    }
+
+    let size = size.green();
     if let Some(color) = path_color {
         writeln!(out, "{size:>size_width$} {}{errors}", path.color(color))
     } else {
@@ -387,6 +428,19 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn traversal_progress_writes_and_clears_one_line() {
+        let mut progress = TraversalProgress::new(Some(Vec::new()));
+        progress.write(42);
+        progress.clear();
+
+        assert_eq!(
+            progress.writer.as_deref(),
+            Some(b"Enumerating 42 items\r\x1b[2K\r".as_slice())
+        );
+        assert!(!progress.visible);
+    }
+
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn file_as_root_keeps_cached_metadata_after_removal() {
@@ -405,7 +459,7 @@ mod tests {
 
             let mut out = Vec::new();
             let (result, statistics) = aggregate_entries(
-                &mut out,
+                (&mut out, false),
                 None::<Vec<u8>>,
                 WalkOptions {
                     threads: 1,
@@ -483,7 +537,7 @@ mod tests {
 
             let mut out = Vec::new();
             let result = aggregate(
-                &mut out,
+                (&mut out, false),
                 None::<Vec<u8>>,
                 WalkOptions {
                     threads: 1,
@@ -609,7 +663,7 @@ mod tests {
         ] {
             let mut output = Vec::new();
             let (result, _) = aggregate(
-                &mut output,
+                (&mut output, false),
                 None::<Vec<u8>>,
                 WalkOptions {
                     threads: 2,
@@ -648,7 +702,7 @@ mod tests {
         .unwrap();
         let mut output = Vec::new();
         let (result, _) = aggregate_entries(
-            &mut output,
+            (&mut output, false),
             None::<Vec<u8>>,
             WalkOptions {
                 threads: 2,
@@ -684,13 +738,13 @@ mod tests {
     fn completed_roots_stream_in_input_order() {
         let aggregates = [
             Aggregate {
-                path: "first".into(),
+                display_path: "first".into(),
                 bytes: 1,
                 errors: 0,
                 is_file: false,
             },
             Aggregate {
-                path: "second".into(),
+                display_path: "second".into(),
                 bytes: 2,
                 errors: 0,
                 is_file: false,
@@ -698,18 +752,17 @@ mod tests {
         ];
         let mut completed = [false, true];
         let mut next_output = 0;
-        let mut progress_visible = true;
+        let mut progress = TraversalProgress::new(Some(Vec::new()));
+        progress.visible = true;
         let mut out = Vec::new();
-        let mut err = Some(Vec::new());
 
         output_completed(
             &mut out,
-            &mut err,
             &aggregates,
             &completed,
             &mut next_output,
-            &mut progress_visible,
-            ByteFormat::Bytes,
+            &mut progress,
+            (ByteFormat::Bytes, false),
         )
         .unwrap();
         assert!(
@@ -720,12 +773,11 @@ mod tests {
         completed[0] = true;
         output_completed(
             &mut out,
-            &mut err,
             &aggregates,
             &completed,
             &mut next_output,
-            &mut progress_visible,
-            ByteFormat::Bytes,
+            &mut progress,
+            (ByteFormat::Bytes, false),
         )
         .unwrap();
 
@@ -737,11 +789,11 @@ mod tests {
         );
         assert_eq!(next_output, 2, "output stopped at root {next_output}");
         assert_eq!(
-            err.as_deref(),
+            progress.writer.as_deref(),
             Some(CLEAR_CURRENT_LINE.as_bytes()),
-            "unexpected progress cleanup: {err:?}"
+            "unexpected progress cleanup"
         );
-        assert!(!progress_visible, "progress remained visible after cleanup");
+        assert!(!progress.visible, "progress remained visible after cleanup");
     }
 
     #[test]
@@ -755,7 +807,7 @@ mod tests {
         let mut err = Vec::new();
 
         aggregate(
-            &mut out,
+            (&mut out, false),
             Some(&mut err),
             WalkOptions {
                 threads: 2,
@@ -789,7 +841,7 @@ mod tests {
         symlink(dir.path().join("missing"), &root).unwrap();
 
         let (result, _) = aggregate(
-            Vec::new(),
+            (Vec::new(), false),
             None::<Vec<u8>>,
             WalkOptions {
                 threads: 1,
@@ -827,7 +879,7 @@ mod tests {
         let aggregate_with = |ignore_from: &[PathBuf]| -> u128 {
             let mut out = Vec::new();
             aggregate(
-                &mut out,
+                (&mut out, false),
                 None::<&mut Vec<u8>>,
                 WalkOptions {
                     threads: 2,

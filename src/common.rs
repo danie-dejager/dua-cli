@@ -141,16 +141,6 @@ impl Throttle {
         instance
     }
 
-    /// Execute `f` only if the throttle currently allows an update.
-    pub(crate) fn throttled<F>(&self, f: F)
-    where
-        F: FnOnce(),
-    {
-        if self.can_update() {
-            f();
-        }
-    }
-
     /// Return `true` if we are not currently throttled.
     pub(crate) fn can_update(&self) -> bool {
         self.trigger.swap(false, Ordering::Relaxed)
@@ -286,6 +276,12 @@ pub(crate) struct WalkRoot {
 }
 
 impl WalkOptions {
+    /// Return whether `path`, resolved relative to `cwd`, names an ignored directory.
+    #[must_use]
+    pub fn is_ignored_directory(&self, path: &Path, cwd: &Path) -> bool {
+        ignore_directory(path, &self.ignore_dirs, cwd)
+    }
+
     pub(crate) fn iter_from_paths(
         &self,
         roots: Vec<WalkRoot>,
@@ -437,8 +433,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ignore_directories() {
+    fn walk_options_identify_ignored_directories() {
         let cwd = std::env::current_dir().unwrap();
+        let mut options = WalkOptions {
+            threads: 1,
+            count_hard_links: false,
+            apparent_size: false,
+            cross_filesystems: true,
+            ignore_dirs: BTreeSet::new(),
+            ignore_patterns: None,
+            metadata_options: crate::TraversalOptions::default(),
+        };
         #[cfg(unix)]
         let mut parameters = vec![
             ("/usr", vec!["/usr"], true),
@@ -468,19 +473,21 @@ mod tests {
         ];
 
         parameters.extend([
+            ("src", vec![], false),
             ("src", vec!["src"], true),
             ("src/interactive", vec!["src"], false),
             ("src/interactive/..", vec!["src"], true),
         ]);
 
         for (path, ignore_dirs, expected_result) in parameters {
-            let ignore_dirs = canonicalize_ignore_dirs(
+            options.ignore_dirs = canonicalize_ignore_dirs(
                 &ignore_dirs.into_iter().map(Into::into).collect::<Vec<_>>(),
             );
             assert_eq!(
-                ignore_directory(path.as_ref(), &ignore_dirs, &cwd),
+                options.is_ignored_directory(path.as_ref(), &cwd),
                 expected_result,
-                "result='{expected_result}' for path='{path}' and ignore_dir='{ignore_dirs:?}' "
+                "result='{expected_result}' for path='{path}' and ignore_dir='{:?}' ",
+                options.ignore_dirs
             );
         }
     }

@@ -4,15 +4,18 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+pub(crate) use dua_core as walk;
+pub use dua_core::Options as TraversalOptions;
+
 mod aggregate;
 mod common;
 mod config;
 pub use config::Config;
 mod crossdev;
 mod inodefilter;
-pub(crate) use dua_core as walk;
-pub use dua_core::Options as TraversalOptions;
+mod tree;
 
+mod stacks;
 /// Filesystem traversal, in-memory tree representation, and traversal events.
 pub mod traverse;
 
@@ -21,3 +24,5 @@ pub use aggregate::aggregate;
 pub use aggregate::aggregate_entries;
 pub use common::*;
 pub(crate) use inodefilter::InodeFilter;
+pub use stacks::stacks;
+pub use tree::aggregate_tree;
