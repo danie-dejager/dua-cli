@@ -4,10 +4,12 @@ use crate::interactive::widgets::tui_ext::{
 };
 use anyhow::{Context, Result, anyhow};
 use bstr::BString;
-use crossterm::event::{KeyEvent, KeyEventKind};
-use dua::traverse::{Tree, TreeIndex};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use dua::{
+    KeysConfig,
+    traverse::{Tree, TreeIndex},
+};
 use gix::glob::pattern::Case;
-use petgraph::Direction;
 use std::borrow::Borrow;
 use tui::{
     buffer::Buffer,
@@ -21,9 +23,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::interactive::state::Cursor;
 
-pub struct GlobPaneProps {
+pub struct GlobPaneProps<'a> {
     pub border_style: Style,
     pub has_focus: bool,
+    pub keys: &'a KeysConfig,
 }
 
 pub struct GlobPane {
@@ -47,32 +50,24 @@ impl Default for GlobPane {
 }
 
 impl GlobPane {
-    pub fn process_events(&mut self, key: KeyEvent) {
-        use crossterm::event::KeyCode::{Backspace, Char, Left, Right};
-        use crossterm::event::KeyModifiers;
+    pub fn process_events(&mut self, key: KeyEvent, keys: &KeysConfig) {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        match key.code {
-            Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.case = match self.case {
-                    Case::Sensitive => Case::Fold,
-                    Case::Fold => Case::Sensitive,
-                };
-            }
-            Char(to_insert) => {
-                self.enter_char(to_insert);
-            }
-            Backspace => {
-                self.delete_char();
-            }
-            Left => {
-                self.move_cursor_left();
-            }
-            Right => {
-                self.move_cursor_right();
-            }
-            _ => {}
+
+        if keys.search_toggle_case.matches(key) {
+            self.case = match self.case {
+                Case::Sensitive => Case::Fold,
+                Case::Fold => Case::Sensitive,
+            };
+        } else if keys.search_backspace.matches(key) {
+            self.delete_char();
+        } else if keys.search_left.matches(key) {
+            self.move_cursor_left();
+        } else if keys.search_right.matches(key) {
+            self.move_cursor_right();
+        } else if let KeyCode::Char(to_insert) = key.code {
+            self.enter_char(to_insert);
         }
     }
 
@@ -118,9 +113,9 @@ impl GlobPane {
         new_cursor_pos.clamp(0, self.input.graphemes(true).count())
     }
 
-    pub fn render(
+    pub fn render<'a>(
         &mut self,
-        props: impl Borrow<GlobPaneProps>,
+        props: impl Borrow<GlobPaneProps<'a>>,
         area: Rect,
         buffer: &mut Buffer,
         cursor: &mut Cursor,
@@ -128,6 +123,7 @@ impl GlobPane {
         let GlobPaneProps {
             border_style,
             has_focus,
+            keys,
         } = props.borrow();
 
         let title = match self.case {
@@ -148,7 +144,7 @@ impl GlobPane {
             .render(margin_left_right(inner_block_area, 1), buffer);
 
         if *has_focus {
-            draw_top_right_help(area, title, buffer);
+            draw_top_right_help(area, title, buffer, keys);
 
             cursor.show = true;
             cursor.x = inner_block_area.x
@@ -166,9 +162,12 @@ impl GlobPane {
     }
 }
 
-fn draw_top_right_help(area: Rect, title: &str, buf: &mut Buffer) -> Rect {
-    let help_text = " search = enter | case = ^f | cancel = esc ";
-    let help_text_block_width = block_width(help_text);
+fn draw_top_right_help(area: Rect, title: &str, buf: &mut Buffer, keys: &KeysConfig) -> Rect {
+    let help_text = format!(
+        " search = {} | case = {} | cancel = {} ",
+        keys.search_confirm, keys.search_toggle_case, keys.close_pane
+    );
+    let help_text_block_width = block_width(&help_text);
     let bound = Rect {
         width: area.width.saturating_sub(1),
         ..area
@@ -177,7 +176,7 @@ fn draw_top_right_help(area: Rect, title: &str, buf: &mut Buffer) -> Rect {
         draw_text_nowrap_fn(
             rect::snap_to_right(bound, help_text_block_width),
             buf,
-            help_text,
+            &help_text,
             |_, _, _| Style::default(),
         );
     }
@@ -201,8 +200,8 @@ fn glob_search_neighbours(
     path: &mut BString,
     case: Case,
 ) {
-    for node_index in tree.neighbors_directed(root_index, Direction::Outgoing) {
-        if let Some(node) = tree.node_weight(node_index) {
+    for node_index in tree.children(root_index) {
+        if let Some(node) = tree.entry(node_index) {
             let previous_len = path.len();
             let basename_start = if path.is_empty() {
                 None
@@ -210,7 +209,7 @@ fn glob_search_neighbours(
                 path.push(b'/');
                 Some(previous_len + 1)
             };
-            path.extend_from_slice(gix::path::into_bstr(&node.name).as_ref());
+            path.extend_from_slice(gix::path::into_bstr(node.name.as_ref()).as_ref());
             if glob.matches_repo_relative_path(
                 path.as_ref(),
                 basename_start,
@@ -247,8 +246,9 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEventKind, KeyEventState, KeyModifiers};
 
     #[test]
-    fn ctrl_f_key_types_into_input() {
+    fn default_toggle_case_key_does_not_type_into_input() {
         let mut glob_pane = GlobPane::default();
+        let keys = KeysConfig::default();
         assert_eq!(glob_pane.input, "");
         assert_eq!(glob_pane.case, Case::Fold); // default is case-insensitive
 
@@ -258,10 +258,90 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::empty(),
         };
-        glob_pane.process_events(ctrl_f);
+        glob_pane.process_events(ctrl_f, &keys);
         assert_eq!(glob_pane.case, Case::Sensitive);
+        assert_eq!(glob_pane.input, "");
 
-        glob_pane.process_events(ctrl_f);
+        glob_pane.process_events(ctrl_f, &keys);
         assert_eq!(glob_pane.case, Case::Fold);
+    }
+
+    #[test]
+    fn configured_character_bindings_take_precedence_over_text_input() {
+        let keys = toml::from_str::<dua::Config>(
+            r#"
+            [keys]
+            search_toggle_case = ["t"]
+            search_backspace = ["x"]
+            search_left = ["h"]
+            search_right = ["l"]
+            "#,
+        )
+        .expect("valid config")
+        .keys;
+        let mut glob_pane = GlobPane::default();
+
+        glob_pane.process_events(KeyCode::Char('a').into(), &keys);
+        glob_pane.process_events(KeyCode::Char('h').into(), &keys);
+        assert_eq!(glob_pane.cursor_grapheme_idx, 0);
+        glob_pane.process_events(KeyCode::Char('l').into(), &keys);
+        assert_eq!(glob_pane.cursor_grapheme_idx, 1);
+        glob_pane.process_events(KeyCode::Char('x').into(), &keys);
+        glob_pane.process_events(KeyCode::Char('t').into(), &keys);
+
+        assert_eq!(
+            glob_pane.input, "",
+            "configured bindings should not be typed into the input"
+        );
+        assert_eq!(
+            glob_pane.case,
+            Case::Sensitive,
+            "configured toggle binding should change case sensitivity"
+        );
+    }
+
+    #[test]
+    fn rendered_help_uses_configured_bindings() {
+        let keys = toml::from_str::<dua::Config>(
+            r#"
+            [keys]
+            close_pane = ["q"]
+            search_confirm = ["f2"]
+            search_toggle_case = ["alt+c"]
+            "#,
+        )
+        .expect("valid config")
+        .keys;
+        let area = Rect::new(0, 0, 100, 3);
+        let mut buffer = Buffer::empty(area);
+
+        GlobPane::default().render(
+            GlobPaneProps {
+                border_style: Style::default(),
+                has_focus: true,
+                keys: &keys,
+            },
+            area,
+            &mut buffer,
+            &mut Cursor::default(),
+        );
+
+        insta::assert_debug_snapshot!(
+            buffer,
+            "glob pane help with configured bindings",
+            @r#"
+        Buffer {
+            area: Rect { x: 0, y: 0, width: 100, height: 3 },
+            content: [
+                "┌Git-Glob (case-insensitive)────────────────────────── search = <F2> | case = Alt + c | cancel = q ┐",
+                "│                                                                                                  │",
+                "└──────────────────────────────────────────────────────────────────────────────────────────────────┘",
+            ],
+            styles: [
+                x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+            ]
+        }
+        "#
+        );
     }
 }

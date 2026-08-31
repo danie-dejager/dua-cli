@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
-use std::ffi::OsString;
+use std::{ffi::OsString, fs, time::Duration};
 
 use crate::interactive::app::tests::utils::{into_codes, into_events};
 use crate::interactive::widgets::Column;
@@ -10,8 +10,10 @@ use crate::interactive::{
     app::tests::{
         FIXTURE_PATH,
         utils::{
-            fixture_str, index_by_name, initialized_app_and_terminal_from_fixture, into_keys,
-            node_by_index, node_by_name, untraversed_app_and_terminal_from_fixture,
+            fixture, fixture_str, index_by_name, initialized_app_and_terminal_from_fixture,
+            initialized_app_and_terminal_from_paths, into_keys, new_test_terminal, node_by_index,
+            node_by_name, untraversed_app_and_terminal_from_fixture,
+            untraversed_app_and_terminal_with_closure,
         },
     },
 };
@@ -447,6 +449,153 @@ fn simple_user_journey_read_only() -> Result<()> {
 }
 
 #[test]
+fn configured_key_scans_the_parent_without_retraversing_the_current_root() -> Result<()> {
+    let (mut terminal, mut app) = initialized_app_and_terminal_from_fixture(&["sample-02/dir"])?;
+    app.config = toml::from_str(
+        r#"
+        [keys]
+        scan_parent = "P"
+        "#,
+    )?;
+    let dir = index_by_name(&app, fixture_str("sample-02/dir"));
+    let sub = index_by_name(&app, "sub");
+    let dir_size = node_by_index(&app, dir).size;
+    let nodes_before = app.traversal.tree.len();
+
+    app.process_events(&mut terminal, into_codes("u"))?;
+    assert_eq!(
+        app.state.message.as_deref(),
+        Some("Top level reached. Press P to scan the parent directory")
+    );
+
+    app.process_events(&mut terminal, into_codes("U"))?;
+    assert!(
+        app.state.scan.is_none(),
+        "the replaced default no longer starts the parent scan"
+    );
+
+    app.process_events(&mut terminal, into_codes("P"))?;
+    assert!(
+        app.state.scan.is_some(),
+        "configured key starts the parent scan"
+    );
+    app.run_until_traversed(&mut terminal, into_events([]))?;
+
+    assert_eq!(
+        crate::interactive::path_of(&app.traversal.tree, app.traversal.root_index, None),
+        fixture("sample-02").canonicalize()?,
+        "the shared parent becomes the new root"
+    );
+    assert_eq!(
+        index_by_name(&app, "dir"),
+        dir,
+        "the existing root is reattached instead of replaced"
+    );
+    assert_eq!(
+        index_by_name(&app, "sub"),
+        sub,
+        "the existing subtree keeps its node identities"
+    );
+    assert_eq!(
+        node_by_index(&app, dir).size,
+        dir_size,
+        "an explicit root's own metadata is not counted twice"
+    );
+    assert_eq!(
+        app.traversal.tree.len(),
+        nodes_before + 2,
+        "only the two previously unseen siblings are added"
+    );
+    assert_eq!(
+        app.state.stats.entries_traversed, 3,
+        "the existing directory is observed but its descendants are not traversed"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn shift_u_wraps_a_complete_root_at_its_natural_position() -> Result<()> {
+    let current_root = fixture("sample-02/dir").canonicalize()?;
+    let root_paths = fs::read_dir(&current_root)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (mut terminal, mut app) = initialized_app_and_terminal_from_paths(&root_paths)?;
+    app.state.root_path = Some(current_root.clone());
+
+    let old_root = app.traversal.root_index;
+    let sub = index_by_name(&app, current_root.join("sub"));
+    let size_before = node_by_index(&app, old_root).size;
+    let count_before = node_by_index(&app, old_root)
+        .entry_count
+        .unwrap_or_default();
+    let nodes_before = app.traversal.tree.len();
+
+    app.process_events(&mut terminal, into_codes("U"))?;
+    app.run_until_traversed(&mut terminal, into_events([]))?;
+
+    assert_eq!(
+        crate::interactive::path_of(&app.traversal.tree, app.traversal.root_index, None),
+        current_root.parent().unwrap(),
+        "the complete root's parent becomes the new root"
+    );
+    assert_eq!(
+        index_by_name(&app, "dir"),
+        old_root,
+        "the previous root becomes its naturally named child"
+    );
+    assert_eq!(index_by_name(&app, "sub"), sub);
+    let promoted_root = node_by_index(&app, old_root);
+    assert_eq!(
+        promoted_root.size,
+        size_before + u128::from(current_root.metadata()?.len()),
+        "the promoted node gains the directory entry's own size"
+    );
+    assert_eq!(promoted_root.entry_count, Some(count_before + 1));
+    assert_eq!(app.traversal.tree.len(), nodes_before + 3);
+    assert_eq!(app.state.stats.entries_traversed, 3);
+
+    Ok(())
+}
+
+#[test]
+fn configured_keybinding_replaces_only_its_default() -> Result<()> {
+    let (mut terminal, mut app) =
+        initialized_app_and_terminal_from_fixture(&["sample-01", "sample-02"])?;
+    app.config = toml::from_str(
+        r#"
+        [keys]
+        sort_by_name = "ctrl+b"
+        "#,
+    )?;
+
+    let initial_selection = app.state.navigation().selected;
+    app.process_events(&mut terminal, into_codes("j"))?;
+    assert_ne!(
+        app.state.navigation().selected,
+        initial_selection,
+        "an unspecified binding keeps its default"
+    );
+
+    app.process_events(&mut terminal, into_codes("n"))?;
+    assert_eq!(
+        app.state.sorting,
+        SortMode::SizeDescending,
+        "the overridden default no longer invokes the action"
+    );
+
+    app.process_events(
+        &mut terminal,
+        into_events([Event::Key(KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+        ))]),
+    )?;
+    assert_eq!(app.state.sorting, SortMode::NameAscending);
+    Ok(())
+}
+
+#[test]
 fn once_finishes_traversal_without_user_events() -> Result<()> {
     let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
     app.traverse()?;
@@ -513,6 +662,170 @@ fn once_waits_for_replayed_refresh_to_finish() -> Result<()> {
     assert!(
         app.state.scan.is_none(),
         "once mode should wait for refreshes started by replayed events"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn snapshot_roundtrip_is_read_only() -> Result<()> {
+    use crate::interactive::terminal::TerminalApp;
+    use dua::{ByteFormat, Config};
+
+    let fixture = tempfile::tempdir()?;
+    let root = fixture.path().join("root");
+    fs::create_dir(&root)?;
+    fs::write(root.join("a"), b"a")?;
+    fs::write(root.join("b"), b"bb")?;
+    fs::create_dir(root.join("dir"))?;
+    fs::write(root.join("dir/file"), b"content")?;
+    let snapshot_dir = tempfile::tempdir()?;
+    let snapshot_path = snapshot_dir.path().join("scan.dua");
+    fs::write(&snapshot_path, b"old snapshot")?;
+    let (mut terminal, mut scanned) = untraversed_app_and_terminal_with_closure(
+        std::slice::from_ref(&root),
+        std::path::Path::to_path_buf,
+    )?;
+    scanned.traverse_and_export(snapshot_path.clone(), Some(2))?;
+    assert_eq!(
+        fs::read(&snapshot_path)?,
+        b"old snapshot",
+        "export waits for the traversal to finish"
+    );
+    scanned.run_until_traversed(&mut terminal, into_events([]))?;
+
+    let snapshot = dua::snapshot::read(fs::File::open(&snapshot_path)?)?;
+    let root_paths = snapshot
+        .roots
+        .iter()
+        .map(|root| {
+            snapshot
+                .traversal
+                .tree
+                .name(*root)
+                .expect("snapshot root exists")
+                .into_owned()
+        })
+        .collect();
+    let snapshot_load_duration = Duration::from_millis(123);
+    let mut terminal = new_test_terminal()?;
+    let mut app = TerminalApp::initialize(
+        &mut terminal,
+        scanned.state.walk_options.clone(),
+        ByteFormat::Metric,
+        true,
+        root_paths,
+        None,
+        Config::default(),
+        snapshot.traversal,
+        Some(snapshot_load_duration),
+    )?;
+
+    assert!(app.state.read_only);
+    assert_eq!(app.state.stats.elapsed, Some(snapshot_load_duration));
+    assert!(app.state.scan.is_none(), "import starts no traversal");
+    assert!(app.state.gitignored_entries.is_none());
+
+    fs::remove_file(root.join("a"))?;
+    app.process_events(&mut terminal, into_codes("o"))?;
+    let missing = app
+        .state
+        .entries
+        .iter()
+        .find(|entry| entry.name == std::path::Path::new("a"))
+        .expect("snapshot contains a");
+    assert!(
+        missing.exists,
+        "snapshot entries are not checked against the local filesystem"
+    );
+    let missing_index = missing.index;
+
+    app.process_events(&mut terminal, into_codes("R"))?;
+    assert!(app.state.scan.is_none(), "refresh remains disabled");
+    assert_eq!(
+        app.state.message.as_deref(),
+        Some("Snapshots are read-only")
+    );
+
+    app.process_events(&mut terminal, into_codes("U"))?;
+    assert!(app.state.scan.is_none(), "parent scan remains disabled");
+    assert_eq!(
+        app.state.message.as_deref(),
+        Some("Snapshots are read-only")
+    );
+
+    app.state.navigation_mut().select(Some(missing_index));
+    app.process_events(&mut terminal, into_codes("O"))?;
+    let missing_message = format!("Snapshot path is unavailable: {}", root.join("a").display());
+    assert_eq!(app.state.message.as_deref(), Some(missing_message.as_str()));
+
+    app.process_events(&mut terminal, into_codes("i"))?;
+    assert!(app.state.gitignored_entries.is_none());
+    assert_eq!(
+        app.state.message.as_deref(),
+        Some("Gitignored entry detection is unavailable for snapshots")
+    );
+
+    let victim = root.join("b");
+    let victim_index = app
+        .state
+        .entries
+        .iter()
+        .find(|entry| entry.name == std::path::Path::new("b"))
+        .expect("snapshot contains b")
+        .index;
+    app.state.navigation_mut().select(Some(victim_index));
+    app.process_events(
+        &mut terminal,
+        into_events([
+            Event::Key(KeyCode::Char(' ').into()),
+            Event::Key(KeyCode::Tab.into()),
+            Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+        ]),
+    )?;
+    assert!(victim.exists(), "delete is disabled for snapshots");
+    assert_eq!(
+        app.state.message.as_deref(),
+        Some("Snapshots are read-only")
+    );
+
+    #[cfg(feature = "trash-move")]
+    {
+        app.process_events(
+            &mut terminal,
+            into_events([Event::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                KeyModifiers::CONTROL,
+            ))]),
+        )?;
+        assert!(victim.exists(), "move to trash is disabled for snapshots");
+    }
+
+    app.process_events(&mut terminal, into_keys([KeyCode::Tab]))?;
+    let marked_paths = app
+        .window
+        .mark
+        .take()
+        .expect("marking remains available")
+        .into_paths()
+        .collect::<Vec<_>>();
+    assert_eq!(marked_paths, [victim]);
+
+    app.process_events(&mut terminal, into_codes("n"))?;
+    assert_eq!(app.state.sorting, SortMode::NameAscending);
+    app.process_events(
+        &mut terminal,
+        into_events([
+            Event::Key(KeyCode::Char('/').into()),
+            Event::Key(KeyCode::Char('d').into()),
+            Event::Key(KeyCode::Char('i').into()),
+            Event::Key(KeyCode::Char('r').into()),
+            Event::Key(KeyCode::Enter.into()),
+        ]),
+    )?;
+    assert!(
+        app.state.glob_navigation.is_some(),
+        "globbing remains available"
     );
 
     Ok(())

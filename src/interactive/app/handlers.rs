@@ -83,15 +83,19 @@ impl AppState {
     pub fn open_that(&mut self, tree_view: &TreeView<'_>) {
         if let Some(idx) = self.navigation().selected {
             let path = tree_view.path_of(idx);
+            if self.read_only && !path.exists() {
+                self.message = Some(format!("Snapshot path is unavailable: {}", path.display()));
+                return;
+            }
             if let Err(err) = open::that(&path) {
                 self.message = Some(format!("Failed to open {}: {err}", path.display()));
             }
         }
     }
 
-    pub fn exit_node_with_traversal(&mut self, tree_view: &TreeView<'_>) {
+    pub fn exit_node_with_traversal(&mut self, tree_view: &TreeView<'_>, scan_parent_key: &str) {
         let entries = self.entries_for_exit_node(tree_view);
-        self.exit_node(entries, tree_view);
+        self.exit_node(entries, tree_view, scan_parent_key);
     }
 
     fn entries_for_exit_node(
@@ -112,6 +116,7 @@ impl AppState {
         &mut self,
         entries: Option<(TreeIndex, Vec<EntryDataBundle>)>,
         tree_view: &TreeView<'_>,
+        scan_parent_key: &str,
     ) {
         match entries {
             Some((parent_idx, entries)) => {
@@ -120,7 +125,15 @@ impl AppState {
                 self.update_entry_annotations(tree_view);
                 self.reset_message();
             }
-            None => self.message = Some("Top level reached".into()),
+            None => {
+                self.message = Some(if self.can_scan_parent(tree_view) {
+                    format!(
+                        "Top level reached. Press {scan_parent_key} to scan the parent directory"
+                    )
+                } else {
+                    "Top level reached".into()
+                });
+            }
         }
     }
 
@@ -232,6 +245,10 @@ impl AppState {
     }
 
     pub fn toggle_gitignored_entries(&mut self, tree_view: &TreeView<'_>) {
+        if self.read_only {
+            self.message = Some("Gitignored entry detection is unavailable for snapshots".into());
+            return;
+        }
         self.gitignored_entries = self.gitignored_entries.is_none().then(BTreeSet::new);
         self.update_entry_annotations(tree_view);
         self.reset_message();
@@ -309,8 +326,15 @@ impl AppState {
     ) where
         B: Backend,
     {
-        let res = window.mark.take().and_then(|p| p.process_events(key));
+        let res = window
+            .mark
+            .take()
+            .and_then(|p| p.process_events(key, &config.keys));
         window.mark = match res {
+            Some((pane, Some(_))) if self.read_only => {
+                self.message = Some("Snapshots are read-only".into());
+                Some(pane)
+            }
             Some((pane, mode)) => match mode {
                 Some(MarkMode::Delete) => {
                     self.message = Some("Deleting items...".to_string());
@@ -364,7 +388,7 @@ impl AppState {
                         pane = window.mark.take().expect("option to be filled");
                         let entry_size = tree_view
                             .tree()
-                            .node_weight(entry_to_trash)
+                            .data(entry_to_trash)
                             .map_or(0, |entry| entry.size);
                         match self.trash_entry(entry_to_trash, tree_view) {
                             Ok(ed) => {
@@ -435,10 +459,7 @@ impl AppState {
             return Ok(EntryDeletionStats::default());
         }
         let path_to_delete = tree_view.path_of(index);
-        let bytes = tree_view
-            .tree()
-            .node_weight(index)
-            .map_or(0, |entry| entry.size);
+        let bytes = tree_view.tree().data(index).map_or(0, |entry| entry.size);
         let mut stats = delete_directory_recursively(path_to_delete, self.walk_options.threads);
         if stats.errors == 0 {
             stats.entries = self.delete_entries_in_traversal(index, tree_view);
@@ -660,7 +681,7 @@ fn annotation_message(cleanup_count: usize, gitignored_count: usize) -> Option<S
             } else {
                 "cleanup candidates"
             };
-            Some(format!("{cleanup} {label} (X)"))
+            Some(format!("{cleanup} {label}"))
         }
         (0, gitignored) => {
             let label = if gitignored == 1 {
@@ -668,9 +689,9 @@ fn annotation_message(cleanup_count: usize, gitignored_count: usize) -> Option<S
             } else {
                 "gitignored entries"
             };
-            Some(format!("{gitignored} {label} (I)"))
+            Some(format!("{gitignored} {label}"))
         }
-        (cleanup, gitignored) => Some(format!("{cleanup} cleanup, {gitignored} gitignored (X|I)")),
+        (cleanup, gitignored) => Some(format!("{cleanup} cleanup, {gitignored} gitignored")),
     }
 }
 

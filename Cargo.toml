@@ -30,7 +30,7 @@ fn_params_excessive_bools = "allow"
 
 [package]
 name = "dua-cli"
-version = "2.43.0"
+version = "2.44.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -50,6 +50,7 @@ include = [
 default = ["tui-crossplatform", "trash-move"]
 tui-crossplatform = [
     "crossterm",
+    "dep:signal-hook",
     "tui",
     "open",
     "unicode-segmentation",
@@ -62,7 +63,6 @@ dua-core = { path = "crates/dua-lib", version = "3.3.0" }
 clap = { version = "4.0.29", features = ["derive", "env"] }
 clap_complete = "4.5.54"
 byte-unit = { version = "5.2.5", features = ["u128"] }
-petgraph = "0.8.3"
 itertools = "0.15.0"
 num_cpus = "1.10.0"
 anyhow = "1.0.31"
@@ -82,7 +82,7 @@ open = { version = "5.0", optional = true }
 wild = "2.0.4"
 owo-colors = "4.0.0"
 human_format = "1.0.3"
-gix = { version = "0.86.0", default-features = false, features = [
+gix = { version = "0.87.1", default-features = false, features = [
     "excludes",
     "sha1",
     "sha256",
@@ -93,6 +93,7 @@ jiff = "0.2.18"
 log = "0.4.20"
 log-panics = { version = "2", features = ["with-backtrace"] }
 crossbeam.workspace = true
+tempfile.workspace = true
 toml = "1.1.4"
 serde = { version = "1.0", features = ["derive"] }
 dirs = "6"
@@ -100,6 +101,9 @@ shlex = "2.0.1"
 
 [target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
 filesize = "0.2.0"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.3.18", optional = true }
 
 [[bin]]
 name = "dua"
@@ -117,8 +121,8 @@ lto = "fat"
 build-override = { opt-level = 3 }
 
 [dev-dependencies]
+insta = "1.48.0"
 pretty_assertions = "1.0.0"
-tempfile.workspace = true
 
 [lints]
 workspace = true

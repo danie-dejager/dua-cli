@@ -5,7 +5,7 @@ use crate::interactive::{
     state::FocussedPane,
     widgets::{MainWindow, MainWindowProps, glob_search},
 };
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use crossbeam::channel::Receiver;
 use crossterm::{
     event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -15,14 +15,25 @@ use dua::{
     Config, WalkResult,
     traverse::{BackgroundTraversal, EntryData, Traversal, TreeIndex},
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tui::{
     Terminal, backend::Backend, buffer::Buffer, layout::Rect, style::Color, widgets::Widget,
 };
 
 use super::notification;
 use super::state::{AppState, Cursor};
+#[cfg(unix)]
+use super::terminal::suspend_terminal;
+use super::terminal::write_snapshot_atomically;
 use super::tree_view::TreeView;
+
+/// Information needed to extend the traversal one directory upward:
+///
+/// 0. The parent directory to scan.
+/// 1. Existing subtree roots to preserve as `(filesystem path, tree node)` pairs.
+/// 2. Whether the current root represents a complete directory and must become a child of a new
+///    root. If false, it is a synthetic container that can be repurposed as the parent.
+type ParentScan = (PathBuf, Vec<(PathBuf, TreeIndex)>, bool);
 
 impl AppState {
     pub fn navigation_mut(&mut self) -> &mut Navigation {
@@ -47,7 +58,7 @@ impl AppState {
         B: Backend,
     {
         let props = MainWindowProps {
-            current_path: tree_view.current_path(self.navigation().view_root),
+            current_path: self.display_path(tree_view),
             entries_traversed: self.stats.entries_traversed,
             total_bytes: tree_view.total_size(),
             start: self.stats.start,
@@ -70,7 +81,14 @@ impl AppState {
         result
     }
 
-    pub fn traverse(&mut self, traversal: &Traversal) -> Result<()> {
+    pub fn traverse(
+        &mut self,
+        traversal: &Traversal,
+        snapshot_export: Option<(PathBuf, Option<i32>)>,
+    ) -> Result<()> {
+        if self.read_only {
+            bail!("Snapshots are read-only");
+        }
         let bg_traversal = BackgroundTraversal::start(
             traversal.root_index,
             &self.walk_options,
@@ -86,7 +104,207 @@ impl AppState {
         self.scan = Some(FilesystemScan {
             active_traversal: bg_traversal,
             previous_selection: None,
+            snapshot_export,
         });
+        Ok(())
+    }
+
+    pub(super) fn can_scan_parent(&self, tree: &TreeView<'_>) -> bool {
+        self.parent_scan_target(tree).is_some()
+    }
+
+    /// Return the path displayed for the current view without resolving snapshot paths on disk.
+    fn display_path(&self, tree_view: &TreeView<'_>) -> PathBuf {
+        if self.read_only {
+            let path = tree_view.path_of(self.navigation().view_root);
+            if path.as_os_str().is_empty() {
+                PathBuf::from("<snapshot>")
+            } else {
+                path
+            }
+        } else {
+            tree_view.current_path(self.navigation().view_root)
+        }
+    }
+
+    fn parent_scan_target(&self, tree: &TreeView<'_>) -> Option<ParentScan> {
+        if self.read_only
+            || self.scan.is_some()
+            || self.glob_navigation.is_some()
+            || self.navigation.view_root != tree.traversal.root_index
+        {
+            return None;
+        }
+
+        if let Some(current_root) = &self.root_path {
+            let parent = current_root.parent()?;
+            return (parent != current_root.as_path()).then(|| {
+                (
+                    parent.to_owned(),
+                    vec![(current_root.clone(), tree.traversal.root_index)],
+                    true,
+                )
+            });
+        }
+
+        let cwd = std::env::current_dir().ok()?;
+        let mut common_parent = None;
+        let mut roots = Vec::new();
+        for index in tree.tree().children(tree.traversal.root_index) {
+            let path = tree.path_of(index);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+            let name = path.file_name()?.to_owned();
+            let parent = path.parent()?.canonicalize().ok()?;
+            if common_parent
+                .as_ref()
+                .is_some_and(|common| common != &parent)
+            {
+                return None;
+            }
+            roots.push((parent.join(name), index));
+            common_parent = Some(parent);
+        }
+        common_parent.map(|parent| (parent, roots, false))
+    }
+
+    fn scan_parent(&mut self, tree: &mut TreeView<'_>) -> Result<()> {
+        if self.read_only {
+            self.message = Some("Snapshots are read-only".into());
+            return Ok(());
+        }
+        if self.scan.is_some() {
+            self.message = Some("Traversal already running".into());
+            return Ok(());
+        }
+        let Some((parent, preexisting, wrap_root)) = self.parent_scan_target(tree) else {
+            self.message = Some("Top level reached".into());
+            return Ok(());
+        };
+
+        let old_root = tree.traversal.root_index;
+        let new_root = if wrap_root {
+            tree.tree_mut().add_root(
+                &parent,
+                EntryData {
+                    is_dir: true,
+                    ..EntryData::default()
+                },
+            )
+        } else {
+            old_root
+        };
+        let pattern_roots = self
+            .walk_options
+            .ignore_patterns
+            .as_ref()
+            .map(|_| std::slice::from_ref(&parent));
+        let active_traversal = match BackgroundTraversal::start_incremental(
+            new_root,
+            &self.walk_options,
+            vec![parent.clone()],
+            pattern_roots,
+            true,
+            false,
+            preexisting
+                .iter()
+                .map(|(path, index)| (path.clone(), *index, wrap_root))
+                .collect(),
+        ) {
+            Ok(traversal) => traversal,
+            Err(err) => {
+                if wrap_root {
+                    tree.tree_mut().remove_subtree(new_root);
+                }
+                return Err(err);
+            }
+        };
+
+        let previous_selection = self.navigation.selected;
+        if wrap_root {
+            let current_root = self.root_path.as_ref().expect("complete root is set");
+            tree.tree_mut()
+                .rename(
+                    old_root,
+                    current_root
+                        .file_name()
+                        .expect("filesystem roots have no parent"),
+                )
+                .expect("root exists");
+            tree.tree_mut()
+                .update(old_root, |entry| entry.is_dir = true);
+            let children = tree.tree().children(old_root).collect::<Vec<_>>();
+            for child in children {
+                let name = tree
+                    .tree()
+                    .name(child)
+                    .expect("child exists")
+                    .file_name()
+                    .expect("children have a file name")
+                    .to_owned();
+                tree.tree_mut().rename(child, name).expect("child exists");
+            }
+            tree.tree_mut()
+                .attach(new_root, old_root)
+                .expect("old root is detached");
+        } else {
+            tree.tree_mut()
+                .rename(old_root, &parent)
+                .expect("root exists");
+            tree.tree_mut()
+                .update(old_root, |entry| entry.is_dir = true);
+            for (path, index) in &preexisting {
+                tree.tree_mut()
+                    .rename(
+                        *index,
+                        path.file_name()
+                            .expect("paths with a parent have a file name"),
+                    )
+                    .expect("preexisting node exists");
+            }
+        }
+
+        tree.recompute_sizes_recursively(new_root);
+        tree.traversal.root_index = new_root;
+        self.navigation.tree_root = new_root;
+        self.navigation.view_root = new_root;
+        self.entries = tree.sorted_entries(new_root, self.sorting, self.entry_check());
+        let selected = if wrap_root {
+            Some(old_root)
+        } else {
+            previous_selection
+                .filter(|selected| preexisting.iter().any(|(_, index)| index == selected))
+                .or_else(|| self.entries.first().map(|entry| entry.index))
+        };
+        self.navigation.select(selected);
+        self.update_entry_annotations(tree);
+
+        let previous_selection = selected.and_then(|selected| {
+            self.entries
+                .iter()
+                .position(|entry| entry.index == selected)
+                .map(|position| {
+                    (
+                        tree.tree()
+                            .name(selected)
+                            .expect("selected node exists")
+                            .into_owned(),
+                        position,
+                    )
+                })
+        });
+        self.root_path = Some(parent.clone());
+        self.root_paths = vec![parent];
+        self.received_events = false;
+        self.scan = Some(FilesystemScan {
+            active_traversal,
+            previous_selection,
+            snapshot_export: None,
+        });
+        self.reset_message();
         Ok(())
     }
 
@@ -211,6 +429,7 @@ impl AppState {
         if let Some(FilesystemScan {
             active_traversal,
             previous_selection,
+            snapshot_export,
         }) = self.scan.as_mut()
         {
             crossbeam::select! {
@@ -240,7 +459,26 @@ impl AppState {
                         let previous_selection = previous_selection.clone();
                         if is_finished {
                             let root_index = active_traversal.root_idx;
+                            let export = snapshot_export
+                                .take()
+                                .map(|(path, compression_level)| {
+                                    active_traversal
+                                        .root_nodes()
+                                        .map(|roots| (path, roots, compression_level))
+                                        .context(
+                                            "traversal did not produce a node for every root",
+                                        )
+                                })
+                                .transpose()?;
                             self.recompute_sizes_recursively(traversal, root_index);
+                            if let Some((path, roots, compression_level)) = export {
+                                write_snapshot_atomically(
+                                    &path,
+                                    traversal,
+                                    &roots,
+                                    compression_level,
+                                )?;
+                            }
                             self.scan = None;
                             traversal.cost = Some(traversal.start_time.elapsed());
                         }
@@ -312,7 +550,10 @@ impl AppState {
     }
 
     pub(crate) fn entry_check(&self) -> EntryCheck {
-        EntryCheck::new(self.scan.is_some(), self.allow_entry_check)
+        EntryCheck::new(
+            self.scan.is_some(),
+            self.allow_entry_check && !self.read_only,
+        )
     }
 
     fn process_terminal_event<B>(
@@ -328,9 +569,6 @@ impl AppState {
         B: Backend,
     {
         use FocussedPane::{Glob, Help, Main, Mark};
-        use crossterm::event::KeyCode::{
-            Backspace, Char, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up,
-        };
 
         let key = match event {
             Event::FocusGained => {
@@ -355,42 +593,42 @@ impl AppState {
 
         let glob_focussed = self.focussed == Glob;
         let mut tree_view = self.tree_view(traversal);
+        let keys = &config.keys;
 
-        let esc_navigates_back_in_main =
-            config.keys.esc_navigates_back && key.code == Esc && self.focussed == Main;
-
-        if esc_navigates_back_in_main {
+        let close_pane = keys.close_pane.matches(key);
+        let quit = !glob_focussed && keys.quit.matches(key);
+        let mut handled = true;
+        if keys.esc_navigates_back && close_pane && self.focussed == Main {
             self.pending_exit = false;
-            self.exit_node_with_traversal(&tree_view);
+            self.exit_node_with_traversal(&tree_view, &keys.scan_parent.primary());
+        } else if close_pane || quit {
+            if let Some(result) = self.handle_quit(&mut tree_view, window) {
+                return Ok(Some(result?));
+            }
         } else {
-            match (key.code, glob_focussed) {
-                (Esc, _) | (Char('q'), false) => {
-                    if let Some(result) = self.handle_quit(&mut tree_view, window) {
-                        return Ok(Some(result?));
-                    }
+            self.pending_exit = false;
+            match key {
+                #[cfg(unix)]
+                _ if keys.suspend.matches(key) => {
+                    suspend_terminal(terminal, config.notifications.any_enabled())?;
+                }
+                _ if keys.cycle_panes.matches(key) => {
+                    self.cycle_focus(window);
+                }
+                _ if !glob_focussed && keys.open_search.matches(key) => {
+                    self.toggle_glob_search(window);
+                }
+                _ if !glob_focussed && keys.toggle_help.matches(key) => {
+                    self.toggle_help_pane(window);
+                }
+                _ if !glob_focussed && keys.quit_immediately.matches(key) => {
+                    return Ok(Some(WalkResult {
+                        num_errors: self.stats.io_errors,
+                    }));
                 }
                 _ => {
-                    self.pending_exit = false;
+                    handled = false;
                 }
-            }
-        }
-
-        let mut handled = true;
-        match key.code {
-            Tab => {
-                self.cycle_focus(window);
-            }
-            Char('/') if !glob_focussed => {
-                self.toggle_glob_search(window);
-            }
-            Char('?') if !glob_focussed => self.toggle_help_pane(window),
-            Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) && !glob_focussed => {
-                return Ok(Some(WalkResult {
-                    num_errors: self.stats.io_errors,
-                }));
-            }
-            _ => {
-                handled = false;
             }
         }
 
@@ -405,73 +643,92 @@ impl AppState {
                     config,
                 ),
                 Help => {
-                    window.help.as_mut().expect("help pane").process_events(key);
+                    window
+                        .help
+                        .as_mut()
+                        .expect("help pane")
+                        .process_events(key, keys);
                 }
                 Glob => {
                     let glob_pane = window.glob.as_mut().expect("glob pane");
-                    match key.code {
-                        Enter => self.search_glob_pattern(
-                            &mut tree_view,
-                            &glob_pane.input,
-                            glob_pane.case,
-                        ),
-                        _ => glob_pane.process_events(key),
+                    if keys.search_confirm.matches(key) {
+                        self.search_glob_pattern(&mut tree_view, &glob_pane.input, glob_pane.case);
+                    } else {
+                        glob_pane.process_events(key, keys);
                     }
                 }
-                Main => match key.code {
-                    Char('O') => self.open_that(&tree_view),
-                    Char(' ') => self.mark_entry(
-                        CursorMode::KeepPosition,
-                        MarkEntryMode::Toggle,
-                        window,
-                        &tree_view,
-                    ),
-                    Char('x') => self.mark_entry(
-                        CursorMode::Advance,
-                        MarkEntryMode::MarkForDeletion,
-                        window,
-                        &tree_view,
-                    ),
-                    Char('a') => self.mark_all_entries(MarkEntryMode::Toggle, window, &tree_view),
-                    Char('t') => self.toggle_cleanup_candidates(&tree_view),
-                    Char('X') => self.mark_cleanup_candidates(window, &tree_view),
-                    Char('i') => self.toggle_gitignored_entries(&tree_view),
-                    Char('I') => self.mark_gitignored_entries(window, &tree_view),
-                    Char('o' | 'l') | Enter | Right => {
+                Main => {
+                    if keys.open_entry.matches(key) {
+                        self.open_that(&tree_view);
+                    } else if keys.toggle_mark.matches(key) {
+                        self.mark_entry(
+                            CursorMode::KeepPosition,
+                            MarkEntryMode::Toggle,
+                            window,
+                            &tree_view,
+                        );
+                    } else if keys.mark_for_deletion.matches(key) {
+                        self.mark_entry(
+                            CursorMode::Advance,
+                            MarkEntryMode::MarkForDeletion,
+                            window,
+                            &tree_view,
+                        );
+                    } else if keys.toggle_all.matches(key) {
+                        self.mark_all_entries(MarkEntryMode::Toggle, window, &tree_view);
+                    } else if keys.toggle_cleanup.matches(key) {
+                        self.toggle_cleanup_candidates(&tree_view);
+                    } else if keys.mark_cleanup.matches(key) {
+                        self.mark_cleanup_candidates(window, &tree_view);
+                    } else if keys.toggle_gitignore.matches(key) {
+                        self.toggle_gitignored_entries(&tree_view);
+                    } else if keys.mark_gitignore.matches(key) {
+                        self.mark_gitignored_entries(window, &tree_view);
+                    } else if keys.descend.matches(key) {
                         self.enter_node_with_traversal(&tree_view);
-                    }
-                    Char('r') => self.refresh(&mut tree_view, window, Refresh::Selected)?,
-                    Char('R') => self.refresh(&mut tree_view, window, Refresh::AllInView)?,
-                    Char('H') | Home => self.change_entry_selection(CursorDirection::ToTop),
-                    Char('G') | End => self.change_entry_selection(CursorDirection::ToBottom),
-                    PageUp => self.change_entry_selection(CursorDirection::PageUp),
-                    Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    } else if keys.refresh_selected.matches(key) {
+                        self.refresh(&mut tree_view, window, Refresh::Selected)?;
+                    } else if keys.refresh_all.matches(key) {
+                        self.refresh(&mut tree_view, window, Refresh::AllInView)?;
+                    } else if keys.move_to_top.matches(key) {
+                        self.change_entry_selection(CursorDirection::ToTop);
+                    } else if keys.move_to_bottom.matches(key) {
+                        self.change_entry_selection(CursorDirection::ToBottom);
+                    } else if keys.page_up.matches(key) {
                         self.change_entry_selection(CursorDirection::PageUp);
-                    }
-                    Char('k') | Up => self.change_entry_selection(CursorDirection::Up),
-                    Char('j') | Down => self.change_entry_selection(CursorDirection::Down),
-                    PageDown => self.change_entry_selection(CursorDirection::PageDown),
-                    Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    } else if keys.move_up.matches(key) {
+                        self.change_entry_selection(CursorDirection::Up);
+                    } else if keys.move_down.matches(key) {
+                        self.change_entry_selection(CursorDirection::Down);
+                    } else if keys.page_down.matches(key) {
                         self.change_entry_selection(CursorDirection::PageDown);
+                    } else if keys.sort_by_size.matches(key) {
+                        self.cycle_sorting(&tree_view);
+                    } else if keys.sort_by_mtime.matches(key) {
+                        self.cycle_mtime_sorting(&tree_view);
+                    } else if keys.cycle_mtime_mode.matches(key) {
+                        self.cycle_mtime_sort_mode(&tree_view);
+                    } else if keys.sort_by_count.matches(key) {
+                        self.cycle_count_sorting(&tree_view);
+                    } else if keys.toggle_count_column.matches(key) {
+                        self.toggle_count_column();
+                    } else if keys.sort_by_name.matches(key) {
+                        self.cycle_name_sorting(&tree_view);
+                    } else if keys.cycle_visualization.matches(key) {
+                        display.byte_vis.cycle();
+                    } else if keys.toggle_mark_and_move_down.matches(key) {
+                        self.mark_entry(
+                            CursorMode::Advance,
+                            MarkEntryMode::Toggle,
+                            window,
+                            &tree_view,
+                        );
+                    } else if keys.scan_parent.matches(key) {
+                        self.scan_parent(&mut tree_view)?;
+                    } else if keys.ascend.matches(key) {
+                        self.exit_node_with_traversal(&tree_view, &keys.scan_parent.primary());
                     }
-                    Char('s') => self.cycle_sorting(&tree_view),
-                    Char('m') => self.cycle_mtime_sorting(&tree_view),
-                    Char('M') => self.cycle_mtime_sort_mode(&tree_view),
-                    Char('c') => self.cycle_count_sorting(&tree_view),
-                    Char('C') => self.toggle_count_column(),
-                    Char('n') => self.cycle_name_sorting(&tree_view),
-                    Char('g' | 'S') => display.byte_vis.cycle(),
-                    Char('d') => self.mark_entry(
-                        CursorMode::Advance,
-                        MarkEntryMode::Toggle,
-                        window,
-                        &tree_view,
-                    ),
-                    Char('u' | 'h') | Backspace | Left => {
-                        self.exit_node_with_traversal(&tree_view);
-                    }
-                    _ => {}
-                },
+                }
             }
         }
         self.draw(window, &tree_view, *display, terminal, config)?;
@@ -485,6 +742,10 @@ impl AppState {
         window: &mut MainWindow,
         what: Refresh,
     ) -> anyhow::Result<()> {
+        if self.read_only {
+            self.message = Some("Snapshots are read-only".into());
+            return Ok(());
+        }
         // If another traversal is already running do not do anything.
         if self.scan.is_some() {
             self.message = Some("Traversal already running".into());
@@ -492,9 +753,9 @@ impl AppState {
         }
 
         let previous_selection = self.navigation().selected.and_then(|sel_index| {
-            tree.tree().node_weight(sel_index).map(|w| {
+            tree.tree().name(sel_index).map(|name| {
                 (
-                    w.name.clone(),
+                    name.into_owned(),
                     self.entries
                         .iter()
                         .enumerate()
@@ -592,6 +853,7 @@ impl AppState {
                 use_root_path,
             )?,
             previous_selection,
+            snapshot_export: None,
         });
 
         self.received_events = false;
@@ -602,6 +864,10 @@ impl AppState {
         TreeView {
             traversal,
             glob_tree_root: self.glob_navigation.as_ref().map(|n| n.tree_root),
+            glob_matches: self
+                .glob_navigation
+                .as_ref()
+                .map(|navigation| Arc::clone(&navigation.matches)),
         }
     }
 
@@ -621,27 +887,27 @@ impl AppState {
             Ok(matches) if matches.is_empty() => {
                 self.message = Some("No match found".into());
             }
-            Ok(matches) => {
+            Ok(mut matches) => {
                 if let Some(glob_source) = &self.glob_navigation {
-                    tree_view.tree_mut().remove_node(glob_source.tree_root);
+                    tree_view.tree_mut().remove_subtree(glob_source.tree_root);
                 }
 
-                let tree_root = tree_view.tree_mut().add_node(EntryData::default());
+                matches.sort_unstable();
+                let matches: Arc<[TreeIndex]> = matches.into();
+                let tree_root = tree_view.tree_mut().add_detached("", EntryData::default());
                 let glob_source = Navigation {
                     tree_root,
                     view_root: tree_root,
                     selected: Some(tree_root),
+                    matches: Arc::clone(&matches),
                     ..Default::default()
                 };
                 self.glob_navigation = Some(glob_source);
 
-                for idx in matches {
-                    tree_view.tree_mut().add_edge(tree_root, idx, ());
-                }
-
                 let glob_tree_view = TreeView {
                     traversal: tree_view.traversal,
                     glob_tree_root: Some(tree_root),
+                    glob_matches: Some(matches),
                 };
                 let new_entries =
                     glob_tree_view.sorted_entries(tree_root, self.sorting, self.entry_check());
@@ -697,7 +963,7 @@ impl AppState {
         use FocussedPane::Main;
         self.focussed = Main;
         if let Some(glob_source) = &self.glob_navigation {
-            tree_view.tree_mut().remove_node(glob_source.tree_root);
+            tree_view.tree_mut().remove_subtree(glob_source.tree_root);
         }
         self.glob_navigation = None;
         window.glob = None;
