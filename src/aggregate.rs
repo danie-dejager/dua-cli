@@ -303,7 +303,7 @@ fn aggregate_inner(
             #[cfg(target_os = "macos")]
             let root_device_id = prepared_entry
                 .as_ref()
-                .and_then(|entry| entry.metadata.as_ref().ok())
+                .and_then(|entry| entry.metadata.as_ref()?.as_ref().ok())
                 .map_or_else(|| crossdev::init(&path), |metadata| Ok(metadata.dev()));
             #[cfg(not(target_os = "macos"))]
             let root_device_id = crossdev::init(&path);
@@ -360,7 +360,7 @@ fn aggregate_inner(
                         || entry.file_type.is_symlink() && entry.path().is_file();
                 }
                 let file_size = u128::from(match &entry.metadata {
-                    Ok(m)
+                    Some(Ok(m))
                         if (walk_options.count_hard_links || inodes.add(&entry, m))
                             && (walk_options.cross_filesystems
                                 || crossdev::is_same_device(device_ids[root_idx], m)) =>
@@ -383,8 +383,8 @@ fn aggregate_inner(
                             }
                         }
                     }
-                    Ok(_) => 0,
-                    Err(_) => {
+                    Some(Ok(_)) => 0,
+                    Some(Err(_)) | None => {
                         aggregate.errors += 1;
                         0
                     }
@@ -916,6 +916,7 @@ mod tests {
                     ignore_dirs: std::collections::BTreeSet::default(),
                     ignore_patterns: None,
                     metadata_options: crate::TraversalOptions {
+                        skip_metadata: false,
                         apfs_clone_metadata: true,
                     },
                 },
@@ -937,6 +938,7 @@ mod tests {
         let entries = dua_core::read_dir(
             directory.path(),
             dua_core::Options {
+                skip_metadata: false,
                 apfs_clone_metadata: true,
             },
         )
@@ -955,6 +957,7 @@ mod tests {
                 ignore_dirs: std::collections::BTreeSet::default(),
                 ignore_patterns: None,
                 metadata_options: crate::TraversalOptions {
+                    skip_metadata: false,
                     apfs_clone_metadata: true,
                 },
             },
@@ -1173,7 +1176,7 @@ mod tests {
         std::fs::write(&path, b"content").unwrap();
         let entry =
             crate::walk::Entry::from_path(&path, crate::TraversalOptions::default()).unwrap();
-        let metadata = entry.metadata.as_ref().unwrap();
+        let metadata = entry.metadata.as_ref().unwrap().as_ref().unwrap();
         let expected = metadata.allocated_size();
         std::fs::remove_file(path).unwrap();
         assert_eq!(
@@ -1190,7 +1193,7 @@ mod tests {
         std::fs::write(dir.path().join("file"), b"content").unwrap();
         let entry =
             crate::walk::Entry::from_path(dir.path(), crate::TraversalOptions::default()).unwrap();
-        let metadata = entry.metadata.as_ref().unwrap();
+        let metadata = entry.metadata.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(size_on_disk(&entry, metadata).unwrap(), 0);
     }
 }

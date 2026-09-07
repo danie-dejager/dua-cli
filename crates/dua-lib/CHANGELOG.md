@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 4.0.0 (2026-09-07)
+
+### Performance (BREAKING)
+
+ - <csr-id-f643c7493c6ce48658983543d954fe4912f8e7fc/> avoid unnecessary metadata during deletion
+   <!-- agent -->
+   Deletion needs entry types, but every walk collected full sizes, timestamps,
+   allocation information, and file identities. Add `Options::skip_metadata` and
+   use directory-entry types without extra metadata lookups when available.
+   macOS and Windows use standard enumeration for this mode; Windows roots
+   query only attribute/tag information. Keep the native metadata readers for
+   ordinary scans and preserve Windows verbatim-path handling.
+   
+   Drop per-entry deletion byte accounting. Successful removals use the existing
+   scanned total; partial failures retain entry/error counts and display unknown
+   bytes instead of collecting metadata solely for that notification.
+   
+   Local macOS/APFS release medians showed 0-11.5% lower deletion time, with
+   wide-directory traversal up to 40% shorter; gains vary with tree shape.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 3 commits contributed to the release over the course of 7 calendar days.
+ - 8 days passed between releases.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Merge pull request #397 from Byron/speed-up-deletions ([`97211e6`](https://github.com/Byron/dua-cli/commit/97211e69ec4e252760143b525ca4688a1309b544))
+    - Avoid unnecessary metadata during deletion ([`f643c74`](https://github.com/Byron/dua-cli/commit/f643c7493c6ce48658983543d954fe4912f8e7fc))
+    - Merge pull request #385 from Byron/io-format ([`3343158`](https://github.com/Byron/dua-cli/commit/3343158b234f9b45e2a0de4fe0ebe9dc56abbb28))
+</details>
+
 ## 3.3.1 (2026-08-30)
 
 ### Performance
@@ -34,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 1 commit contributed to the release.
+ - 2 commits contributed to the release.
  - 2 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -46,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release dua-core v3.3.1, dua-cli v2.44.0 ([`9553f5d`](https://github.com/Byron/dua-cli/commit/9553f5d9e6c5aef939df00c945fddb51f25da349))
     - Compact traversal storage and snapshot replay ([`9513699`](https://github.com/Byron/dua-cli/commit/95136995ea39b35e6575f9ae1c5df9618ff5c0a9))
 </details>
 

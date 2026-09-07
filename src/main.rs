@@ -683,6 +683,7 @@ fn walk_options_from(traversal: &options::ScanArgs) -> Result<dua::WalkOptions> 
         ignore_dirs: canonicalize_ignore_dirs(&traversal.ignore_dirs),
         ignore_patterns: dua::IgnorePatterns::from_files(&traversal.ignore_from)?,
         metadata_options: dua::TraversalOptions {
+            skip_metadata: false,
             #[cfg(target_os = "macos")]
             apfs_clone_metadata: traversal.deduplicate_apfs_clones && !traversal.apparent_size,
         },
@@ -722,10 +723,14 @@ fn extract_aggregate_inputs_maybe_set_cwd(
 
             #[cfg(target_os = "macos")]
             if let Some(cwd_device) = cwd_device {
-                let same_device = entry.metadata.as_ref().map_or_else(
-                    |_| device_id(&entry.path()).map_or(true, |device| device == cwd_device),
-                    |metadata| metadata.dev() == cwd_device,
-                );
+                let same_device = entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.as_ref().ok())
+                    .map_or_else(
+                        || device_id(&entry.path()).map_or(true, |device| device == cwd_device),
+                        |metadata| metadata.dev() == cwd_device,
+                    );
                 if !same_device {
                     continue;
                 }

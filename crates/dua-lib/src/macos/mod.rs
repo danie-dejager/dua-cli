@@ -34,8 +34,8 @@ pub struct Entry {
     pub file_name: OsString,
     /// Filesystem entry type without following symbolic links.
     pub file_type: FileType,
-    /// Metadata returned while enumerating this entry, or an entry-specific I/O error.
-    pub metadata: io::Result<Metadata>,
+    /// Requested metadata or its read error; `None` when [`crate::Options::skip_metadata`] is set.
+    pub metadata: Option<io::Result<Metadata>>,
     /// Path containing this entry.
     pub parent_path: Arc<Path>,
     /// Dense identifier of this directory within the current walk, or `None` for non-directories.
@@ -48,18 +48,21 @@ impl Entry {
     /// Create an entry for an explicitly requested root without following symbolic links.
     pub fn from_path(path: &Path, options: crate::Options) -> io::Result<Self> {
         let metadata = fs::symlink_metadata(path)?;
-        let data_fork =
-            if options.apfs_clone_metadata && metadata.is_file() && metadata.blocks() != 0 {
-                clone_attributes_at(path, &metadata)
-            } else {
-                None
-            };
-        let metadata = Metadata::from_std(&metadata, data_fork);
+        let file_type = FileType::from_std(metadata.file_type());
+        let metadata = (!options.skip_metadata).then(|| {
+            let data_fork =
+                if options.apfs_clone_metadata && metadata.is_file() && metadata.blocks() != 0 {
+                    clone_attributes_at(path, &metadata)
+                } else {
+                    None
+                };
+            Ok(Metadata::from_std(&metadata, data_fork))
+        });
         Ok(Self {
             depth: 0,
             file_name: path.file_name().unwrap_or(path.as_os_str()).to_owned(),
-            file_type: metadata.file_type,
-            metadata: Ok(metadata),
+            file_type,
+            metadata,
             parent_path: Arc::from(path.parent().unwrap_or(Path::new(""))),
             directory_id: None,
             parent_directory_id: None,
@@ -80,7 +83,7 @@ pub struct FileType {
 }
 
 impl FileType {
-    fn from_std(file_type: fs::FileType) -> Self {
+    pub(crate) fn from_std(file_type: fs::FileType) -> Self {
         let kind = if file_type.is_dir() {
             VDIR
         } else if file_type.is_file() {
@@ -346,7 +349,7 @@ impl ReadDir {
             depth: self.depth,
             file_name,
             file_type,
-            metadata,
+            metadata: Some(metadata),
             parent_path: Arc::clone(&self.parent_path),
             directory_id: None,
             parent_directory_id: None,
@@ -413,7 +416,7 @@ impl ReadDir {
             depth: self.depth,
             file_name,
             file_type,
-            metadata,
+            metadata: Some(metadata),
             parent_path: Arc::clone(&self.parent_path),
             directory_id: None,
             parent_directory_id: None,

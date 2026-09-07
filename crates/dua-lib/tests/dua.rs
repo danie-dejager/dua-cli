@@ -76,3 +76,71 @@ fn duplicate_root_indices_are_rejected() {
         |_, _| true,
     );
 }
+
+#[test]
+fn type_only_walks_keep_types_without_collecting_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("nested/child")).unwrap();
+    fs::write(dir.path().join("nested/file"), b"content").unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("nested", dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.path().join("broken")).unwrap();
+    }
+    let options = dua_core::Options::default().skip_metadata();
+    for order in [Order::ParentFirst, Order::Completion] {
+        let expected = walk(dir.path(), 2, order, dua_core::Options::default(), |_| true)
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.path(),
+                    (
+                        entry.depth,
+                        entry.file_type.is_dir(),
+                        entry.file_type.is_symlink(),
+                    ),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut walker = walk(dir.path(), 2, order, options, |_| true);
+        for pass in 0..2 {
+            if pass != 0 {
+                assert!(walker.restart());
+            }
+            let entries = walker.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+            let actual = entries
+                .into_iter()
+                .map(|entry| {
+                    assert!(
+                        entry.metadata.is_none(),
+                        "metadata was not requested: {:?}",
+                        entry.path()
+                    );
+                    (
+                        entry.path(),
+                        (
+                            entry.depth,
+                            entry.file_type.is_dir(),
+                            entry.file_type.is_symlink(),
+                        ),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(actual, expected);
+        }
+
+        let mut paths = BTreeSet::new();
+        let events = walk_roots([(7, dir.path().to_owned())], 2, order, options, |_, _| true);
+        for (root, event) in events {
+            assert_eq!(root, 7);
+            match event {
+                RootEvent::Entry(entry) => {
+                    let entry = entry.unwrap();
+                    assert!(entry.metadata.is_none());
+                    paths.insert(entry.path());
+                }
+                RootEvent::Finished => assert_eq!(paths, expected.keys().cloned().collect()),
+            }
+        }
+    }
+}

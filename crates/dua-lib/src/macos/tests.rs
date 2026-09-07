@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt as _;
 fn options(apfs_clone_metadata: bool) -> Options {
     Options {
         apfs_clone_metadata,
+        skip_metadata: false,
     }
 }
 
@@ -53,10 +54,39 @@ fn fallback_reader_enumerates_entries_with_metadata() {
         "the native directory is empty, so this entry must come from the injected fallback reader"
     );
     assert_eq!(
-        entry.metadata.unwrap().len(),
+        entry.metadata.unwrap().unwrap().len(),
         7,
         "the fallback reader must collect per-entry metadata"
     );
+}
+
+#[test]
+fn type_only_reads_do_not_require_metadata_access() {
+    let directory = tempfile::tempdir().unwrap();
+    let restricted = directory.path().join("restricted");
+    fs::create_dir(&restricted).unwrap();
+    fs::write(restricted.join("file"), b"content").unwrap();
+    fs::create_dir(restricted.join("child")).unwrap();
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o400)).unwrap();
+
+    let entries = crate::read_dir(
+        &restricted,
+        Options {
+            skip_metadata: true,
+            ..options(true)
+        },
+    )
+    .unwrap()
+    .collect::<Vec<_>>();
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        let entry = entry.unwrap();
+        assert!(entry.metadata.is_none());
+        assert_eq!(entry.file_type.is_dir(), entry.file_name == "child");
+        assert_eq!(entry.file_type.is_file(), entry.file_name == "file");
+    }
 }
 
 #[test]
@@ -80,6 +110,7 @@ fn bulk_metadata_matches_std_for_regular_files_resource_forks_and_symlinks() {
         .expect("the resource-fork fixture must be enumerated")
         .unwrap()
         .metadata
+        .unwrap()
         .unwrap();
     assert_eq!(
         ordinary_metadata.data_allocated_size(),
@@ -98,7 +129,7 @@ fn bulk_metadata_matches_std_for_regular_files_resource_forks_and_symlinks() {
     );
     for entry in entries {
         let direct = fs::symlink_metadata(entry.path()).unwrap();
-        let metadata = entry.metadata.unwrap();
+        let metadata = entry.metadata.unwrap().unwrap();
         assert_eq!(
             metadata.len(),
             direct.len(),
@@ -166,7 +197,7 @@ fn bulk_metadata_preserves_fractional_pre_epoch_timestamps() {
         "the filesystem must preserve the fractional pre-epoch timestamp used by this test"
     );
     assert_eq!(
-        entry.metadata.unwrap().modified().unwrap(),
+        entry.metadata.unwrap().unwrap().modified().unwrap(),
         direct,
         "bulk metadata must preserve fractional pre-epoch timestamps"
     );
@@ -201,6 +232,7 @@ fn readable_directory_without_search_permission_preserves_entry_errors() {
     );
     let error = entry
         .metadata
+        .unwrap()
         .err()
         .expect("metadata must retain the directory search-permission error");
     assert_eq!(
@@ -246,11 +278,12 @@ fn bulk_metadata_identifies_clones_and_hard_links() {
         })
         .unwrap()
         .unwrap();
-    assert_eq!(ordinary.metadata.unwrap().clone_id(), None);
+    assert_eq!(ordinary.metadata.unwrap().unwrap().clone_id(), None);
     assert_eq!(
         Entry::from_path(&original, options(false))
             .unwrap()
             .metadata
+            .unwrap()
             .unwrap()
             .clone_id(),
         None
@@ -260,7 +293,7 @@ fn bulk_metadata_identifies_clones_and_hard_links() {
         .unwrap()
         .map(|entry| {
             let entry = entry.unwrap();
-            (entry.file_name, entry.metadata.unwrap())
+            (entry.file_name, entry.metadata.unwrap().unwrap())
         })
         .collect::<std::collections::HashMap<_, _>>();
     let original = &entries[std::ffi::OsStr::new("original")];
@@ -295,6 +328,7 @@ fn bulk_metadata_identifies_clones_and_hard_links() {
     let root = Entry::from_path(&clone, options(true))
         .unwrap()
         .metadata
+        .unwrap()
         .unwrap();
     assert_eq!(
         root.clone_id(),
@@ -314,7 +348,7 @@ fn bulk_device_numbers_match_std_on_devfs() {
     let expected = fs::symlink_metadata(directory.join("null")).unwrap();
 
     assert_eq!(
-        entry.metadata.unwrap().dev(),
+        entry.metadata.unwrap().unwrap().dev(),
         expected.dev(),
         "bulk metadata must report the devfs device number returned by stat"
     );

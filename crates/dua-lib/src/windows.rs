@@ -2,7 +2,7 @@
 
 use std::{
     ffi::OsString,
-    io,
+    fs, io,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -34,8 +34,8 @@ pub struct Entry {
     pub file_name: OsString,
     /// Filesystem entry type without following symbolic links.
     pub file_type: FileType,
-    /// Metadata obtained with directory enumeration.
-    pub metadata: io::Result<Metadata>,
+    /// Requested metadata or its read error; `None` when [`crate::Options::skip_metadata`] is set.
+    pub metadata: Option<io::Result<Metadata>>,
     /// Path containing this entry.
     pub parent_path: Arc<Path>,
     /// Dense identifier of this directory within the current walk, or `None` for non-directories.
@@ -46,12 +46,23 @@ pub struct Entry {
 
 impl Entry {
     /// Create an entry from a filesystem path.
-    pub fn from_path(path: &Path, _options: crate::Options) -> io::Result<Self> {
+    pub fn from_path(path: &Path, options: crate::Options) -> io::Result<Self> {
         let handle = OwnedHandle::open(
             path,
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             FILE_FLAG_OPEN_REPARSE_POINT,
         )?;
+        if options.skip_metadata {
+            return Ok(Self {
+                depth: 0,
+                file_name: path.file_name().unwrap_or(path.as_os_str()).to_owned(),
+                file_type: handle.file_type()?,
+                metadata: None,
+                parent_path: Arc::from(path.parent().unwrap_or(Path::new(""))),
+                directory_id: None,
+                parent_directory_id: None,
+            });
+        }
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         // SAFETY: `handle` is owned and valid, and `info` is writable for the call's duration.
         if unsafe { GetFileInformationByHandle(handle.0, &raw mut info) } == 0 {
@@ -70,25 +81,11 @@ impl Entry {
         {
             return Err(io::Error::last_os_error());
         }
-        let reparse_tag = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
-            // SAFETY: the output pointer and byte count describe the initialized `tag` value.
-            if unsafe {
-                GetFileInformationByHandleEx(
-                    handle.0,
-                    FileAttributeTagInfo,
-                    (&raw mut tag).cast(),
-                    size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            tag.ReparseTag
+        let file_type = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            handle.file_type()?
         } else {
-            0
+            FileType::from_attributes(info.dwFileAttributes, 0)
         };
-        let file_type = FileType::from_attributes(info.dwFileAttributes, reparse_tag);
         let file_id = u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow);
         let metadata = Metadata {
             len: u64::from(info.nFileSizeHigh) << 32 | u64::from(info.nFileSizeLow),
@@ -104,7 +101,7 @@ impl Entry {
             depth: 0,
             file_name: path.file_name().unwrap_or(path.as_os_str()).to_owned(),
             file_type,
-            metadata: Ok(metadata),
+            metadata: Some(Ok(metadata)),
             parent_path: Arc::from(path.parent().unwrap_or(Path::new(""))),
             directory_id: None,
             parent_directory_id: None,
@@ -126,6 +123,13 @@ pub struct FileType {
 }
 
 impl FileType {
+    pub(crate) fn from_std(file_type: fs::FileType) -> Self {
+        Self {
+            is_dir: file_type.is_dir(),
+            is_symlink: file_type.is_symlink(),
+        }
+    }
+
     fn from_attributes(attributes: u32, reparse_tag: u32) -> Self {
         let is_symlink =
             attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && reparse_tag & NAME_SURROGATE_BIT != 0;
@@ -189,6 +193,13 @@ impl Metadata {
     pub fn hard_link_id(&self) -> Option<(u64, u64)> {
         self.file_id.map(|file_id| (self.volume_serial, file_id))
     }
+}
+
+pub(crate) fn read_dir_types(path: &Path) -> io::Result<fs::ReadDir> {
+    let verbatim = absolute_verbatim_path(path)?;
+    fs::read_dir(PathBuf::from(OsString::from_wide(
+        &verbatim[..verbatim.len() - 1],
+    )))
 }
 
 pub(crate) struct ReadDir {
@@ -321,13 +332,13 @@ impl ReadDir {
                 depth: self.depth,
                 file_name,
                 file_type,
-                metadata: Ok(Metadata {
+                metadata: Some(Ok(Metadata {
                     len: info.EndOfFile.max(0).cast_unsigned(),
                     allocated_size: info.AllocationSize.max(0).cast_unsigned(),
                     modified: filetime_to_system_time(info.LastWriteTime.max(0).cast_unsigned()),
                     volume_serial: self.volume_serial,
                     file_id,
-                }),
+                })),
                 parent_path: Arc::clone(&self.parent_path),
                 directory_id: None,
                 parent_directory_id: None,
@@ -373,6 +384,26 @@ impl Iterator for ReadDir {
 struct OwnedHandle(HANDLE);
 
 impl OwnedHandle {
+    fn file_type(&self) -> io::Result<FileType> {
+        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: the owned handle is valid, and the output pointer and length describe `tag`.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                self.0,
+                FileAttributeTagInfo,
+                (&raw mut tag).cast(),
+                size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(FileType::from_attributes(
+            tag.FileAttributes,
+            tag.ReparseTag,
+        ))
+    }
+
     fn open(path: &Path, access: u32, extra_flags: u32) -> io::Result<Self> {
         let path = absolute_verbatim_path(path)?;
         // SAFETY: `path` is null-terminated and all remaining pointer arguments follow the
@@ -521,12 +552,13 @@ mod tests {
         let path = dir.path().join("file");
         std::fs::write(&path, b"content").unwrap();
         let mut entries =
-            ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default()).unwrap();
+            crate::ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default()).unwrap();
         let entry = entries.find_map(Result::ok).unwrap();
-        let metadata = entry.metadata.unwrap();
+        let metadata = entry.metadata.unwrap().unwrap();
         let direct = Entry::from_path(&path, crate::Options::default())
             .unwrap()
             .metadata
+            .unwrap()
             .unwrap();
         assert_eq!(metadata.len(), 7);
         assert!(metadata.allocated_size() >= metadata.len());
@@ -543,14 +575,15 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("file"), b"content").unwrap();
 
-        let entry = ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
+        let entry = crate::ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
             .unwrap()
             .find_map(Result::ok)
             .unwrap();
-        let metadata = entry.metadata.unwrap();
+        let metadata = entry.metadata.unwrap().unwrap();
         let direct = Entry::from_path(&path, crate::Options::default())
             .unwrap()
             .metadata
+            .unwrap()
             .unwrap();
         assert_eq!(metadata.len(), direct.len());
         assert_eq!(metadata.allocated_size(), direct.allocated_size());
@@ -569,9 +602,21 @@ mod tests {
             Err(err) => panic!("directory symlink can be created: {err}"),
         }
 
-        let entry = Entry::from_path(&link, crate::Options::default()).unwrap();
-        assert!(entry.file_type.is_symlink());
-        assert!(!entry.file_type.is_dir());
+        for skip_metadata in [false, true] {
+            let options = crate::Options { skip_metadata };
+            let entry = Entry::from_path(&link, options).unwrap();
+            assert!(entry.file_type.is_symlink());
+            assert!(!entry.file_type.is_dir());
+
+            let entry = crate::ReadDir::open(Arc::from(dir.path()), 1, options)
+                .unwrap()
+                .map(Result::unwrap)
+                .find(|entry| entry.file_name == "link")
+                .unwrap();
+            assert!(entry.file_type.is_symlink());
+            assert!(!entry.file_type.is_dir());
+            assert_eq!(entry.metadata.is_none(), skip_metadata);
+        }
     }
 
     #[test]
@@ -581,9 +626,17 @@ mod tests {
         std::fs::write(&original, b"content").unwrap();
         std::fs::hard_link(&original, dir.path().join("link")).unwrap();
 
-        let ids = ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
+        let ids = crate::ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
             .unwrap()
-            .map(|entry| entry.unwrap().metadata.unwrap().hard_link_id().unwrap())
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .metadata
+                    .unwrap()
+                    .unwrap()
+                    .hard_link_id()
+                    .unwrap()
+            })
             .collect::<Vec<_>>();
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], ids[1]);
@@ -597,7 +650,7 @@ mod tests {
             std::fs::write(dir.path().join(name), []).unwrap();
         }
 
-        let count = ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
+        let count = crate::ReadDir::open(Arc::from(dir.path()), 1, crate::Options::default())
             .unwrap()
             .map(Result::unwrap)
             .count();
@@ -614,11 +667,17 @@ mod tests {
         }
         std::fs::write(path.join("file"), b"content").unwrap();
 
-        let entries = ReadDir::open(Arc::from(path), 1, crate::Options::default())
+        for skip_metadata in [false, true] {
+            let entries = crate::ReadDir::open(
+                Arc::from(path.as_path()),
+                1,
+                crate::Options { skip_metadata },
+            )
             .unwrap()
             .map(|entry| entry.unwrap().file_name)
             .collect::<Vec<_>>();
-        assert_eq!(entries, [OsString::from("file")]);
+            assert_eq!(entries, [OsString::from("file")]);
+        }
     }
 
     #[test]
@@ -636,11 +695,17 @@ mod tests {
                 .unwrap()
                 .ends_with(&"child.\0".encode_utf16().collect::<Vec<_>>())
         );
-        let entries = ReadDir::open(Arc::from(ordinary_child), 1, crate::Options::default())
+        for skip_metadata in [false, true] {
+            let entries = crate::ReadDir::open(
+                Arc::from(ordinary_child.as_path()),
+                1,
+                crate::Options { skip_metadata },
+            )
             .unwrap()
             .map(|entry| entry.unwrap().file_name)
             .collect::<Vec<_>>();
-        assert_eq!(entries, [OsString::from("file")]);
+            assert_eq!(entries, [OsString::from("file")]);
+        }
     }
 
     #[test]
@@ -649,10 +714,16 @@ mod tests {
         std::fs::write(dir.path().join("file"), b"content").unwrap();
         let path = dir.path().join("missing").join("..");
 
-        let entries = ReadDir::open(Arc::from(path), 1, crate::Options::default())
+        for skip_metadata in [false, true] {
+            let entries = crate::ReadDir::open(
+                Arc::from(path.as_path()),
+                1,
+                crate::Options { skip_metadata },
+            )
             .unwrap()
             .map(|entry| entry.unwrap().file_name)
             .collect::<Vec<_>>();
-        assert_eq!(entries, [OsString::from("file")]);
+            assert_eq!(entries, [OsString::from("file")]);
+        }
     }
 }

@@ -29,7 +29,7 @@ use crossbeam::{
 };
 use std::{
     collections::HashMap,
-    io,
+    fs, io,
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{
@@ -41,7 +41,7 @@ use std::{
 };
 
 #[cfg(any(not(any(windows, target_os = "macos")), test))]
-use std::{ffi::OsString, fs};
+use std::ffi::OsString;
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub use std::fs::{FileType, Metadata};
@@ -60,11 +60,66 @@ pub use macos::{Entry, FileType, Metadata};
 #[cfg(target_os = "macos")]
 use macos::ReadDir as NativeReadDir;
 
+#[cfg(target_os = "macos")]
+use std::fs::read_dir as read_dir_types;
+
 #[cfg(windows)]
 pub use windows::{Entry, FileType, Metadata};
 
 #[cfg(windows)]
-use windows::ReadDir as NativeReadDir;
+use windows::{ReadDir as NativeReadDir, read_dir_types};
+
+#[cfg(any(windows, target_os = "macos"))]
+enum ReadDir {
+    Metadata(NativeReadDir),
+    FileTypes {
+        entries: fs::ReadDir,
+        parent_path: Arc<Path>,
+        depth: usize,
+    },
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+impl ReadDir {
+    fn open(path: Arc<Path>, depth: usize, options: Options) -> io::Result<Self> {
+        if options.skip_metadata {
+            Ok(Self::FileTypes {
+                entries: read_dir_types(&path)?,
+                parent_path: path,
+                depth,
+            })
+        } else {
+            NativeReadDir::open(path, depth, options).map(Self::Metadata)
+        }
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+impl Iterator for ReadDir {
+    type Item = io::Result<Entry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Metadata(reader) => reader.next(),
+            Self::FileTypes {
+                entries,
+                parent_path,
+                depth,
+            } => entries.next().map(|entry| {
+                let entry = entry?;
+                Ok(Entry {
+                    depth: *depth,
+                    file_name: entry.file_name(),
+                    file_type: FileType::from_std(entry.file_type()?),
+                    metadata: None,
+                    parent_path: Arc::clone(parent_path),
+                    directory_id: None,
+                    parent_directory_id: None,
+                })
+            }),
+        }
+    }
+}
 
 /// Decides whether to traverse an entry's children for a given root index.
 /// Returning `false` prunes descendants but still emits the entry itself.
@@ -86,12 +141,27 @@ pub enum Order {
     ParentFirst,
 }
 
-/// Platform-specific filesystem metadata requested during traversal.
+/// Filesystem metadata requested during traversal.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
+    /// Collect only entry types, leaving [`Entry::metadata`] as `None`.
+    ///
+    /// Directory enumeration supplies types when available. Explicit roots and filesystems
+    /// without directory-entry types may still require a metadata lookup. This also disables
+    /// APFS clone metadata collection.
+    pub skip_metadata: bool,
     /// Collect APFS clone identity and data-fork allocation metadata.
     #[cfg(target_os = "macos")]
     pub apfs_clone_metadata: bool,
+}
+
+impl Options {
+    /// Collect only entry types, leaving [`Entry::metadata`] as `None`.
+    #[must_use]
+    pub fn skip_metadata(mut self) -> Self {
+        self.skip_metadata = true;
+        self
+    }
 }
 
 /// Dense identifier of a directory within one filesystem walk.
@@ -124,8 +194,8 @@ pub struct Entry {
     pub file_name: OsString,
     /// Filesystem entry type without following symbolic links.
     pub file_type: FileType,
-    /// Entry metadata, or the error encountered while reading it.
-    pub metadata: io::Result<Metadata>,
+    /// Requested metadata or its read error; `None` when [`Options::skip_metadata`] is set.
+    pub metadata: Option<io::Result<Metadata>>,
     /// Path containing this entry.
     pub parent_path: Arc<Path>,
     /// Dense identifier of this directory within the current walk, or `None` for non-directories.
@@ -209,7 +279,6 @@ struct PoolShared {
     /// A counter reaching zero emits that root's [`Event::RootFinished`].
     jobs_per_root: HashMap<usize, AtomicUsize>,
     order: Order,
-    #[cfg(any(windows, target_os = "macos"))]
     options: Options,
     /// Handles used to wake workers, indexed by worker number.
     unparkers: Vec<Unparker>,
@@ -257,7 +326,8 @@ pub struct Walk {
     finished: bool,
 }
 
-/// Read a directory using native bulk enumeration and return entries with metadata already collected.
+/// Read a directory using native enumeration, collecting metadata unless
+/// [`Options::skip_metadata`] is set.
 ///
 /// Entries have depth zero so they can be passed directly to [`walk_root_entries`] without
 /// querying their paths again. Directory-open errors are returned immediately; later enumeration
@@ -267,7 +337,7 @@ pub fn read_dir(
     path: &Path,
     options: Options,
 ) -> io::Result<impl Iterator<Item = io::Result<Entry>>> {
-    NativeReadDir::open(Arc::from(path), 0, options)
+    ReadDir::open(Arc::from(path), 0, options)
 }
 
 /// Walk `root` without following symlinks.
@@ -425,6 +495,7 @@ pub fn walk_roots(
 /// errors are yielded for their corresponding root, and each root retains its index and completion
 /// event just as it does with [`walk_roots`]. Supplied entries are re-rooted at depth zero before
 /// the predicate runs, and their descendants start at depth one.
+/// The supplied entries retain their metadata; `options` controls metadata for descendants.
 ///
 /// # Panics
 ///
@@ -563,13 +634,13 @@ impl Entry {
     }
 
     /// Create an entry from a filesystem path.
-    pub fn from_path(path: &Path, _options: Options) -> io::Result<Self> {
+    pub fn from_path(path: &Path, options: Options) -> io::Result<Self> {
         let metadata = fs::symlink_metadata(path)?;
         Ok(Self {
             depth: 0,
             file_name: path.file_name().unwrap_or(path.as_os_str()).to_owned(),
             file_type: metadata.file_type(),
-            metadata: Ok(metadata),
+            metadata: (!options.skip_metadata).then_some(Ok(metadata)),
             parent_path: Arc::from(path.parent().unwrap_or(Path::new(""))),
             directory_id: None,
             parent_directory_id: None,
@@ -580,12 +651,13 @@ impl Entry {
         depth: usize,
         parent_path: Arc<Path>,
         entry: fs::DirEntry,
+        options: Options,
     ) -> io::Result<Self> {
         Ok(Self {
             depth,
             file_name: entry.file_name(),
             file_type: entry.file_type()?,
-            metadata: entry.metadata(),
+            metadata: (!options.skip_metadata).then(|| entry.metadata()),
             parent_path,
             directory_id: None,
             parent_directory_id: None,
@@ -601,8 +673,6 @@ fn start_pool(
     options: Options,
     next_directory_id: usize,
 ) -> Pool {
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = options;
     let workers: Vec<_> = (0..threads).map(|_| Worker::new_lifo()).collect();
     let parkers: Vec<_> = (0..threads).map(|_| Parker::new()).collect();
     let (event_tx, event_rx) = sync_channel(threads * 2);
@@ -615,7 +685,6 @@ fn start_pool(
         active_roots: AtomicUsize::new(0),
         jobs_per_root,
         order,
-        #[cfg(any(windows, target_os = "macos"))]
         options,
         unparkers: parkers
             .iter()
@@ -666,7 +735,7 @@ fn begin_walks(
             }
         }
         let has_job = if let Ok(entry) = &entry
-            && entry.metadata.is_ok()
+            && entry.metadata.as_ref().is_none_or(Result::is_ok)
             && entry.file_type.is_dir()
             && descend(root_idx, entry)
         {
@@ -833,6 +902,7 @@ fn run_job(job: Job, worker: &Worker<Job>, shared: &PoolShared) {
 /// are emitted directly; the directory-read job completes after all chunks are queued.
 /// This adds parallelism within wide directories when metadata calls dominate. Both traversal
 /// orders already process separate directories concurrently, so typical trees may see no speedup.
+/// Type-only walks convert entries inline instead, avoiding metadata-job overhead.
 #[cfg(not(any(windows, target_os = "macos")))]
 fn read_dir_completion(
     root_idx: usize,
@@ -842,6 +912,10 @@ fn read_dir_completion(
     worker: &Worker<Job>,
     shared: &PoolShared,
 ) {
+    if shared.options.skip_metadata {
+        read_dir_inline(root_idx, path, directory_id, entry_depth, worker, shared);
+        return;
+    }
     let dir_entries = match fs::read_dir(&path) {
         Ok(entries) => entries,
         Err(err) => {
@@ -912,16 +986,6 @@ fn read_dir_completion(
     finish_pending(root_idx, shared);
 }
 
-/// Open the platform-native reader with any traversal-specific metadata enabled.
-#[cfg(any(windows, target_os = "macos"))]
-fn native_read_dir(
-    path: Arc<Path>,
-    depth: usize,
-    shared: &PoolShared,
-) -> io::Result<NativeReadDir> {
-    NativeReadDir::open(path, depth, shared.options)
-}
-
 /// Read a directory for completion-order traversal.
 ///
 /// Unlike the generic implementation, native readers collect metadata while enumerating,
@@ -936,7 +1000,7 @@ fn read_dir_completion(
     worker: &Worker<Job>,
     shared: &PoolShared,
 ) {
-    let dir_entries = match native_read_dir(path, depth, shared) {
+    let dir_entries = match ReadDir::open(path, depth, shared.options) {
         Ok(entries) => entries,
         Err(err) => {
             if shared
@@ -1024,7 +1088,7 @@ fn read_dir_parent_first(
     worker: &Worker<Job>,
     shared: &PoolShared,
 ) {
-    let dir_entries = match native_read_dir(path, depth, shared) {
+    let dir_entries = match ReadDir::open(path, depth, shared.options) {
         Ok(entries) => entries,
         Err(err) => {
             finish_directory(root_idx, Err(err), Vec::new(), worker, shared);
@@ -1068,21 +1132,23 @@ fn stat_entries_completion(
     let entries = entries
         .into_iter()
         .map(|entry| {
-            Entry::from_dir_entry(depth, Arc::clone(&path), entry).map(|mut entry| {
-                assign_directory_ids(&mut entry, directory_id, shared);
-                if entry.file_type.is_dir() && (shared.descend)(root_idx, &entry) {
-                    jobs.push(Job::ReadDir {
-                        root_idx,
-                        path: Arc::from(entry.path()),
-                        directory_id: entry
-                            .directory_id
-                            .expect("directories receive an identifier")
-                            .index(),
-                        entry_depth: entry.depth + 1,
-                    });
-                }
-                entry
-            })
+            Entry::from_dir_entry(depth, Arc::clone(&path), entry, shared.options).map(
+                |mut entry| {
+                    assign_directory_ids(&mut entry, directory_id, shared);
+                    if entry.file_type.is_dir() && (shared.descend)(root_idx, &entry) {
+                        jobs.push(Job::ReadDir {
+                            root_idx,
+                            path: Arc::from(entry.path()),
+                            directory_id: entry
+                                .directory_id
+                                .expect("directories receive an identifier")
+                                .index(),
+                            entry_depth: entry.depth + 1,
+                        });
+                    }
+                    entry
+                },
+            )
         })
         .collect();
     add_pending(root_idx, jobs.len(), shared);
@@ -1142,7 +1208,9 @@ fn read_dir_inline(
     let entries = dir_entries
         .map(|entry| {
             entry
-                .and_then(|entry| Entry::from_dir_entry(depth, Arc::clone(&path), entry))
+                .and_then(|entry| {
+                    Entry::from_dir_entry(depth, Arc::clone(&path), entry, shared.options)
+                })
                 .map(|mut entry| {
                     assign_directory_ids(&mut entry, directory_id, shared);
                     if entry.file_type.is_dir() && (shared.descend)(root_idx, &entry) {
@@ -1544,7 +1612,7 @@ mod tests {
             "nothing left after the Finished event"
         );
 
-        root.metadata = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        root.metadata = Some(Err(io::Error::from(io::ErrorKind::PermissionDenied)));
         let mut events = walk_root_entries(
             [(7, Ok(root))],
             2,
@@ -1557,6 +1625,7 @@ mod tests {
         };
         let error = root
             .metadata
+            .unwrap()
             .err()
             .expect("the inaccessible root must retain its metadata error");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -1599,7 +1668,7 @@ mod tests {
             );
         };
         assert_eq!(entry.path(), path);
-        assert_eq!(entry.metadata.unwrap().len(), expected_len);
+        assert_eq!(entry.metadata.unwrap().unwrap().len(), expected_len);
         assert_eq!(
             events
                 .next()

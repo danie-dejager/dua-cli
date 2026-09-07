@@ -6,7 +6,7 @@ use crate::interactive::widgets::tui_ext::{
 };
 use crate::interactive::{
     DisplayOptions, EntryDataBundle, SortMode,
-    widgets::{EntryMarkMap, entry_color},
+    widgets::{EntryMarkMap, Language, entry_color},
 };
 use chrono::DateTime;
 use dua::traverse::TreeIndex;
@@ -31,6 +31,8 @@ pub struct EntriesProps<'a> {
     pub current_path: PathBuf,
     /// Size display mode used for byte and percentage columns.
     pub display: DisplayOptions,
+    /// Whether directories are shown as `dir/` instead of `/dir`.
+    pub directory_suffix: bool,
     /// Currently selected tree entry, if one is selected.
     pub selected: Option<TreeIndex>,
     /// Entries to display in the pane, already sorted for the current view.
@@ -51,6 +53,8 @@ pub struct EntriesProps<'a> {
     pub show_columns: &'a HashSet<Column>,
     /// Configured keyboard shortcuts shown in the pane hints.
     pub keys: &'a dua::KeysConfig,
+    /// Language used for pane titles and action hints.
+    pub language: Language,
 }
 
 #[derive(Default)]
@@ -68,6 +72,7 @@ impl Entries {
         let EntriesProps {
             current_path,
             display,
+            directory_suffix,
             entries,
             selected,
             marked,
@@ -78,6 +83,7 @@ impl Entries {
             sort_mode,
             show_columns,
             keys,
+            language,
         } = props.borrow();
         let list = &mut self.list;
 
@@ -95,6 +101,7 @@ impl Entries {
             *display,
             item_size,
             title_width_inside_borders,
+            *language,
         );
         let title_block = title_block(&title, *border_style);
         let inner_area = title_block.inner(area);
@@ -150,7 +157,7 @@ impl Entries {
             ) as usize;
 
             let name = shorten_input(
-                name_with_prefix(name.to_string_lossy(), *is_dir),
+                name_with_directory_marker(name.to_string_lossy(), *is_dir, *directory_suffix),
                 available_width,
             );
             let style = name_style(
@@ -180,7 +187,7 @@ impl Entries {
 
         if *is_focussed {
             let bound = draw_top_right_help(area, &title, buf, keys);
-            draw_bottom_right_help(bound, buf, keys);
+            draw_bottom_right_help(bound, buf, keys, *language);
         }
     }
 }
@@ -212,11 +219,12 @@ fn title(
     display: DisplayOptions,
     size: u128,
     title_width_cells: usize,
+    language: Language,
 ) -> String {
-    let statistics = format!(
-        "({item_count} visible, {} total, {})",
-        COUNT.format(recursive_item_count as f64),
-        display.byte_format.display(size)
+    let statistics = language.entries_statistics(
+        item_count,
+        &COUNT.format(recursive_item_count as f64),
+        &display.byte_format.display(size).to_string(),
     );
     let title = format!(" {path} {statistics} ", path = current_path.display());
     if title.width() <= title_width_cells {
@@ -436,14 +444,25 @@ impl<'a> DisplayPath<'a> {
     }
 }
 
-fn draw_bottom_right_help(bound: Rect, buf: &mut Buffer, keys: &dua::KeysConfig) {
+fn draw_bottom_right_help(
+    bound: Rect,
+    buf: &mut Buffer,
+    keys: &dua::KeysConfig,
+    language: Language,
+) {
     let bound = line_bound(bound, bound.height.saturating_sub(1) as usize);
+    let t = language.ui_text();
     let help_text = format!(
-        " mark-move = {} | mark-toggle = {} | cleanup = {} | gitignore = {} | all = {} ",
+        " {} = {} | {} = {} | {} = {} | {} = {} | {} = {} ",
+        t.entries_mark_move,
         keys.toggle_mark_and_move_down,
+        t.entries_mark_toggle,
         keys.toggle_mark,
+        t.entries_cleanup,
         keys.mark_cleanup,
+        t.entries_gitignore,
         keys.mark_gitignore,
+        t.entries_all,
         keys.toggle_all,
     );
 
@@ -555,34 +574,26 @@ fn fill_background_to_right(mut s: Cow<'_, str>, entire_width: u16) -> Cow<'_, s
     }
 }
 
-fn name_with_prefix(mut name: Cow<'_, str>, is_dir: bool) -> Cow<'_, str> {
-    let prefix = if is_dir {
-        // Note that these names never happen on non-root items, so this is a root-item special case.
-        // It was necessary since we can't trust the 'actual' root anymore as it might be the CWD or
-        // `main()` cwd' into the one path that was provided by the user.
-        // The idea was to keep explicit roots as specified without adjustment, which works with this
-        // logic unless somebody provides `name` as is, then we will prefix it which is a little confusing.
-        // Overall, this logic makes the folder display more consistent.
-        if name == "."
-            || name == ".."
-            || name.starts_with('/')
-            || name.starts_with("./")
-            || name.starts_with("../")
-        {
-            None
-        } else {
-            Some("/")
+fn name_with_directory_marker(
+    mut name: Cow<'_, str>,
+    is_dir: bool,
+    directory_suffix: bool,
+) -> Cow<'_, str> {
+    if directory_suffix {
+        if is_dir && !name.chars().last().is_some_and(std::path::is_separator) {
+            name.to_mut().push('/');
         }
-    } else {
-        Some(" ")
-    };
-    match prefix {
-        None => name,
-        Some(prefix) => {
-            name.to_mut().insert_str(0, prefix);
-            name
-        }
+    } else if !is_dir {
+        name.to_mut().insert(0, ' ');
+    } else if name != "."
+        && name != ".."
+        && !name.starts_with('/')
+        && !name.starts_with("./")
+        && !name.starts_with("../")
+    {
+        name.to_mut().insert(0, '/');
     }
+    name
 }
 
 fn name_style(
@@ -760,8 +771,11 @@ mod entries_test {
     use std::collections::HashSet;
     use std::path::Path;
 
-    use super::{name_style, shorten_input, show_mtime_column, title as entry_title};
-    use crate::interactive::widgets::Column;
+    use super::{
+        name_style, name_with_directory_marker, shorten_input, show_mtime_column,
+        title as entry_title,
+    };
+    use crate::interactive::widgets::{Column, Language};
     use crate::interactive::{MTimeSort, SortMode};
     use dua::ByteFormat;
     use tui::style::{Color, Modifier, Style};
@@ -796,6 +810,25 @@ mod entries_test {
     }
 
     #[test]
+    fn directory_marker_can_be_moved_to_a_suffix_by_config() {
+        let suffix = toml::from_str::<dua::Config>("directory_suffix = true").unwrap();
+        for (config, directory, file) in [
+            (dua::Config::default(), "/dir", " file"),
+            (suffix, "dir/", "file"),
+        ] {
+            assert_eq!(
+                name_with_directory_marker("dir".into(), true, config.directory_suffix),
+                directory
+            );
+            assert_eq!(
+                name_with_directory_marker("file".into(), false, config.directory_suffix),
+                file
+            );
+        }
+        assert_eq!(name_with_directory_marker("/".into(), true, true), "/");
+    }
+
+    #[test]
     fn title_drops_statistics_before_shortening_path() {
         let path = "a/b/c";
         assert_eq!(title(path, path.len() + 2), " a/b/c ");
@@ -806,6 +839,23 @@ mod entries_test {
         assert_eq!(
             title("项目/资料", 42),
             " 项目/资料 (4 visible, 43 total, 1.42 GB) "
+        );
+    }
+
+    #[test]
+    fn title_statistics_follow_the_selected_language() {
+        let display = crate::interactive::DisplayOptions::new(ByteFormat::Metric);
+        assert_eq!(
+            entry_title(
+                Path::new("项目/资料"),
+                4,
+                43,
+                display,
+                1_420_000_000,
+                80,
+                Language::Chinese,
+            ),
+            " 项目/资料 (显示 4 项，共 43 项，1.42 GB) "
         );
     }
 
@@ -865,6 +915,7 @@ mod entries_test {
             display,
             1_420_000_000,
             title_width_cells,
+            Language::English,
         )
     }
 

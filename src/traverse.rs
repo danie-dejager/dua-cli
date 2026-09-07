@@ -1016,7 +1016,7 @@ impl BackgroundTraversal {
                 let mut mtime: SystemTime = UNIX_EPOCH;
                 let mut has_mtime = false;
                 data.is_dir = entry.file_type.is_dir();
-                if let Ok(m) = &entry.metadata {
+                if let Some(Ok(m)) = &entry.metadata {
                     if self.walk_options.count_hard_links
                         || self.inodes.add(&entry, m)
                             && (self.walk_options.cross_filesystems
@@ -1419,6 +1419,7 @@ mod tests {
                     ignore_dirs: std::collections::BTreeSet::default(),
                     ignore_patterns: None,
                     metadata_options: crate::TraversalOptions {
+                        skip_metadata: false,
                         apfs_clone_metadata: deduplicate,
                     },
                 },

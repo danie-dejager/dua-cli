@@ -346,9 +346,13 @@ impl WalkOptions {
         let is_excluded_while_walking = Arc::clone(&is_excluded);
         let descend = move |root_idx: usize, entry: &walk::Entry| {
             (cross_filesystems
-                || entry.metadata.as_ref().map_or(true, |metadata| {
-                    crossdev::is_same_device(device_ids[root_idx], metadata)
-                }))
+                || entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.as_ref().ok())
+                    .is_none_or(|metadata| {
+                        crossdev::is_same_device(device_ids[root_idx], metadata)
+                    }))
                 && (entry.depth == 0 || !ignore_directory(&entry.path(), &ignore_dirs, &cwd))
                 && !is_excluded_while_walking(root_idx, entry)
         };

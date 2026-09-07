@@ -14,6 +14,10 @@ use std::{fmt, path::PathBuf, str::FromStr};
 /// ```toml
 /// format = "binary"
 ///
+/// # Show directories as `dir/` instead of `/dir` in interactive mode.
+/// # If unset, behavior defaults to false.
+/// # directory_suffix = false
+///
 /// # Controls whether Git-ignored entry detection is enabled in interactive mode.
 /// # Supported values: true, false.
 /// # If unset, behavior defaults to true.
@@ -37,6 +41,10 @@ use std::{fmt, path::PathBuf, str::FromStr};
 pub struct Config {
     /// Byte count format to use when `--format` and `DUA_FORMAT` are not set.
     pub format: Option<crate::ByteFormat>,
+
+    /// Whether directories are shown as `dir/` instead of `/dir` in interactive mode.
+    /// If unset, defaults to `false`.
+    pub directory_suffix: bool,
 
     /// Keybinding-related settings.
     pub keys: KeysConfig,
@@ -433,6 +441,8 @@ pub struct KeysConfig {
     pub quit_immediately: KeyBindings,
     /// Suspend the process and return control to the shell on Unix.
     pub suspend: KeyBindings,
+    /// Clear and repaint the screen.
+    pub repaint: KeyBindings,
     /// Move focus to the next open pane.
     pub cycle_panes: KeyBindings,
     /// Show or hide help.
@@ -525,6 +535,7 @@ impl Default for KeysConfig {
             quit: KeyBindings::defaults(&["q"]),
             quit_immediately: KeyBindings::defaults(&["ctrl+c"]),
             suspend: KeyBindings::defaults(&["ctrl+z"]),
+            repaint: KeyBindings::defaults(&["ctrl+l"]),
             cycle_panes: KeyBindings::defaults(&["tab"]),
             toggle_help: KeyBindings::defaults(&["?"]),
             open_search: KeyBindings::defaults(&["/"]),
@@ -613,6 +624,10 @@ impl Config {
             "# Supported values: metric, binary, bytes, gb, gib, mb, mib.\n",
             "# format = \"binary\"\n",
             "#\n",
+            "# Show directories as `dir/` instead of `/dir` (NCDU style) in interactive mode.\n",
+            "# If unset, behavior defaults to false.\n",
+            "# directory_suffix = false\n",
+            "#\n",
             "# Controls whether Git-ignored entry detection is enabled in interactive mode.\n",
             "# Supported values: true, false.\n",
             "# If unset, behavior defaults to true.\n",
@@ -638,6 +653,7 @@ impl Config {
             "# quit = \"q\"\n",
             "# quit_immediately = \"ctrl+c\"\n",
             "# suspend = \"ctrl+z\" # Unix only.\n",
+            "# repaint = \"ctrl+l\"\n",
             "# cycle_panes = \"tab\"\n",
             "# toggle_help = \"?\"\n",
             "# open_search = \"/\"\n",
@@ -723,6 +739,7 @@ mod tests {
             "quit",
             "quit_immediately",
             "suspend",
+            "repaint",
             "cycle_panes",
             "toggle_help",
             "open_search",
