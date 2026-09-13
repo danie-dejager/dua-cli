@@ -178,8 +178,7 @@ dua aggregate --help
 
 On macOS, the `--deduplicate-apfs-clones` traversal option counts fully shared
 APFS file clones only once in aggregate and interactive runs. It is opt-in
-because collecting the additional metadata reduces traversal performance by
-about 6%.
+because collecting the additional metadata reduces traversal performance.
 Files that share only some blocks are not deduplicated, and `--apparent-size`
 still reports each file's logical length.
 
@@ -229,6 +228,9 @@ Launch into interactive mode with the `i` or `interactive` subcommand. Get help 
 shortcuts with `?`.
 Use this mode to explore, and/or to delete files and directories to release disk space.
 
+Press `]` to minimize or restore the entire right side. `Tab` cycles through visible panes;
+`?` restores and focuses Help when the right side is minimized.
+
 Please note that great care has been taken to prevent accidental deletions due to a multi-stage
 process, which makes this mode viable for exploration.
 
@@ -238,9 +240,10 @@ dua interactive
 ```
 
 The interactive interface can be localized via the standard POSIX locale environment variables,
-in the usual order of precedence `LC_ALL` > `LC_MESSAGES` > `LANG`. English is the default; German
-(`de`), Japanese (`ja`), Korean (`ko`), and Simplified Chinese (`zh`, `zh_CN`, `zh_SG`, or
-`zh_Hans`) are also available when the locale uses UTF-8 or omits the codeset:
+in the usual order of precedence `LC_ALL` > `LC_MESSAGES` > `LANG`. English is the default. The
+following translations are listed in the order they were added: German (`de`), Japanese (`ja`),
+Korean (`ko`), and Simplified Chinese (`zh`, `zh_CN`, `zh_SG`, or `zh_Hans`). They are available
+when the locale uses UTF-8 or omits the codeset:
 
 Please [open an issue](https://github.com/Byron/dua-cli/issues/new) to request support for your
 language, if you would be available for reviewing it as well.
@@ -251,6 +254,33 @@ LANG=ja_JP.UTF-8 dua i   # Japanese interface
 LANG=ko_KR.UTF-8 dua i   # Korean interface
 LANG=zh_CN.UTF-8 dua i   # Simplified Chinese interface
 ```
+
+### Cleanup Mode
+
+`dua clean [DIRECTORY]...` finds disposable directories and lists them largest first as sizing
+finishes. With no paths, it searches the current directory. *Nothing is deleted automatically.*
+
+```bash
+dua clean ~/dev
+dua clean --depth 3 ~/dev ~/Downloads
+```
+
+Candidates include `node_modules`, Python caches and virtual environments, Cargo project `target`
+directories, and Zig's `.zig-cache`, `zig-cache`, and `zig-out`. In Git repositories, candidates
+must be ignored and contain no tracked files. Directories containing a `.git` entry (regardless
+of case) and paths excluded by traversal options are skipped.
+
+The hub groups sibling candidates and deeper candidates under their shared parent. Open a group
+to browse, sort, or search within it; go back to return to the hub. Use the usual marking and
+deletion keys. Marking a group selects only its candidates, leaving other contents untouched.
+
+- `R` in the hub repeats discovery; `r` rechecks the selected candidate or existing group members.
+- Inside a candidate, either refresh key rechecks the whole candidate. Refresh clears all marks.
+- Discovery is unlimited by default. `--depth 0` checks only the supplied directories for great speedups;
+  candidates are always sized completely.
+
+Traversal options, `--no-entry-check`, and `--once` are supported. Parent scanning, snapshot
+import, and snapshot export are unavailable.
 
 ### Flame graphs
 
@@ -291,6 +321,7 @@ For example:
 esc_navigates_back = true
 
 close_pane = "esc"
+toggle_right_panes = "]"
 sort_by_name = "ctrl+n"
 
 # Disable permanent deletion and moving entries to the trash.

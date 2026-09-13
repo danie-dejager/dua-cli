@@ -110,6 +110,7 @@ pub struct HelpText {
     pub pane_qesc_close_2: &'static str,
     pub pane_tab: &'static str,
     pub pane_tab_2: &'static str,
+    pub pane_toggle_right_panes: &'static str,
     pub pane_help_toggle: &'static str,
 
     pub nav_title: &'static str,
@@ -172,8 +173,9 @@ const EN: HelpText = HelpText {
     pane_esc_close_2: "In main view, ascend to the parent directory.",
     pane_qesc_close: "Close the current pane.",
     pane_qesc_close_2: "Closes the program if no pane is open.",
-    pane_tab: "Cycle between all open panes.",
+    pane_tab: "Cycle between visible panes.",
     pane_tab_2: "Activate 'Marked Items' pane to delete selected files.",
+    pane_toggle_right_panes: "Minimize or restore the entire right side.",
     pane_help_toggle: "Show or hide this help pane.",
 
     nav_title: "Navigation",
@@ -236,8 +238,9 @@ const JA: HelpText = HelpText {
     pane_esc_close_2: "メイン画面では親ディレクトリへ移動する。",
     pane_qesc_close: "現在のペインを閉じる。",
     pane_qesc_close_2: "開いているペインがなければプログラムを終了する。",
-    pane_tab: "開いているペインを順番に切り替える。",
+    pane_tab: "表示中のペインを順番に切り替える。",
     pane_tab_2: "「マーク済み」ペインを有効化して選択ファイルを削除する。",
+    pane_toggle_right_panes: "右側全体を最小化または元に戻す。",
     pane_help_toggle: "このヘルプペインの表示/非表示を切り替える。",
 
     nav_title: "ナビゲーション",
@@ -300,8 +303,9 @@ const KO: HelpText = HelpText {
     pane_esc_close_2: "기본 화면에서는 상위 디렉터리로 이동합니다.",
     pane_qesc_close: "현재 패널을 닫습니다.",
     pane_qesc_close_2: "열린 패널이 없으면 프로그램을 종료합니다.",
-    pane_tab: "열린 모든 패널을 순환합니다.",
+    pane_tab: "표시된 패널 사이에서 순서대로 전환합니다.",
     pane_tab_2: "'표시된 항목' 패널을 활성화하여 선택한 파일을 삭제합니다.",
+    pane_toggle_right_panes: "오른쪽 전체를 최소화하거나 복원합니다.",
     pane_help_toggle: "이 도움말 패널을 표시하거나 숨깁니다.",
 
     nav_title: "탐색",
@@ -364,8 +368,9 @@ const ZH: HelpText = HelpText {
     pane_esc_close_2: "在主视图中，返回上级目录。",
     pane_qesc_close: "关闭当前面板。",
     pane_qesc_close_2: "如果没有打开的面板，则退出程序。",
-    pane_tab: "在所有打开的面板之间循环切换。",
+    pane_tab: "在可见面板之间循环切换。",
     pane_tab_2: "激活“已标记项目”面板以删除所选文件。",
+    pane_toggle_right_panes: "最小化或还原整个右侧区域。",
     pane_help_toggle: "显示或隐藏此帮助面板。",
 
     nav_title: "导航",
@@ -428,8 +433,9 @@ const DE: HelpText = HelpText {
     pane_esc_close_2: "In der Hauptansicht zum übergeordneten Verzeichnis wechseln.",
     pane_qesc_close: "Aktuellen Bereich schließen.",
     pane_qesc_close_2: "Beendet das Programm, wenn kein Bereich geöffnet ist.",
-    pane_tab: "Zwischen allen geöffneten Bereichen wechseln.",
+    pane_tab: "Zwischen sichtbaren Bereichen wechseln.",
     pane_tab_2: "„Markierte Einträge“ zum Löschen gewählter Dateien öffnen.",
+    pane_toggle_right_panes: "Gesamte rechte Seite minimieren oder wiederherstellen.",
     pane_help_toggle: "Diesen Hilfebereich ein- oder ausblenden.",
 
     nav_title: "Navigation",
@@ -501,6 +507,8 @@ pub struct UiText {
     pub glob_cancel: &'static str,
     pub glob_empty: &'static str,
 
+    pub marked_label: &'static str,
+    pub toggle_collapse: &'static str,
     pub mark_snapshot_read_only: &'static str,
     pub mark_no_destructive_keys: &'static str,
     #[cfg(feature = "trash-move")]
@@ -534,9 +542,8 @@ pub struct UiText {
     pub scanning: &'static str,
     pub snapshots_read_only: &'static str,
     pub traversal_running: &'static str,
-    pub deleting_items: &'static str,
-    #[cfg(feature = "trash-move")]
-    pub trashing_items: &'static str,
+    pub deletion_running: &'static str,
+    pub cancelling_deletion: &'static str,
     pub no_cleanup_candidates: &'static str,
     pub cleanup_candidates_already_marked: &'static str,
     pub cleanup_detection_disabled: &'static str,
@@ -553,6 +560,16 @@ pub struct UiText {
 }
 
 impl Language {
+    pub fn cleanup_group_label(self, count: usize) -> String {
+        match self {
+            Language::English => format!("[{count} candidates]"),
+            Language::Japanese => format!("[候補 {count} 件]"),
+            Language::Korean => format!("[후보 {count}개]"),
+            Language::Chinese => format!("[{count} 个候选项]"),
+            Language::German => format!("[{count} Kandidaten]"),
+        }
+    }
+
     pub fn entries_statistics(self, visible: usize, total: &str, size: &str) -> String {
         match self {
             Language::English => format!("({visible} visible, {total} total, {size})"),
@@ -649,23 +666,33 @@ impl Language {
         }
     }
 
-    pub fn deletion_progress(self, count: usize, trash: bool) -> String {
+    pub fn deletion_progress(self, count: usize, remaining: &str, trash: bool) -> String {
         match (self, trash) {
-            (Language::English, false) => format!("Deleted {count} items..."),
-            (Language::English, true) => format!("Trashed {count} items..."),
-            (Language::Japanese, false) => format!("{count} 件を削除..."),
-            (Language::Japanese, true) => format!("{count} 件をゴミ箱へ移動..."),
-            (Language::Korean, false) => format!("{count}개 항목 삭제..."),
-            (Language::Korean, true) => format!("{count}개 항목을 휴지통으로 이동..."),
-            (Language::Chinese, false) => format!("已删除 {count} 个条目..."),
-            (Language::Chinese, true) => format!("已将 {count} 个条目移至回收站..."),
+            (Language::English, false) => {
+                format!("Deleted {count} items; {remaining} remaining...")
+            }
+            (Language::English, true) => {
+                format!("Trashed {count} items; {remaining} remaining...")
+            }
+            (Language::Japanese, false) => format!("{count} 件を削除、残り {remaining}..."),
+            (Language::Japanese, true) => {
+                format!("{count} 件をゴミ箱へ移動、残り {remaining}...")
+            }
+            (Language::Korean, false) => format!("{count}개 항목 삭제, 남은 용량 {remaining}..."),
+            (Language::Korean, true) => {
+                format!("{count}개 항목을 휴지통으로 이동, 남은 용량 {remaining}...")
+            }
+            (Language::Chinese, false) => format!("已删除 {count} 个条目，剩余 {remaining}..."),
+            (Language::Chinese, true) => {
+                format!("已将 {count} 个条目移至回收站，剩余 {remaining}...")
+            }
             (Language::German, false) => format!(
-                "{count} {} gelöscht...",
+                "{count} {} gelöscht; {remaining} verbleibend...",
                 if count == 1 { "Eintrag" } else { "Einträge" }
             ),
             (Language::German, true) => {
                 let label = if count == 1 { "Eintrag" } else { "Einträge" };
-                format!("{count} {label} in den Papierkorb verschoben...")
+                format!("{count} {label} in den Papierkorb verschoben; {remaining} verbleibend...")
             }
         }
     }
@@ -803,6 +830,8 @@ const EN_UI: UiText = UiText {
     glob_case: "case",
     glob_cancel: "cancel",
     glob_empty: "Glob was empty or only whitespace",
+    marked_label: "Marked",
+    toggle_collapse: "toggle-collapse",
     mark_snapshot_read_only: " Snapshot is read-only; marked entries cannot be deleted ",
     mark_no_destructive_keys: " No destructive keys are mapped; marked entries are safe ",
     #[cfg(feature = "trash-move")]
@@ -834,9 +863,8 @@ const EN_UI: UiText = UiText {
     scanning: "-> scanning <-",
     snapshots_read_only: "Snapshots are read-only",
     traversal_running: "Traversal already running",
-    deleting_items: "Deleting items...",
-    #[cfg(feature = "trash-move")]
-    trashing_items: "Trashing items...",
+    deletion_running: "Deletion in progress; changes are disabled",
+    cancelling_deletion: "Cancelling deletion...",
     no_cleanup_candidates: "No cleanup candidates in view",
     cleanup_candidates_already_marked: "Cleanup candidates are already marked",
     cleanup_detection_disabled: "Cleanup candidate detection is disabled",
@@ -865,6 +893,8 @@ const JA_UI: UiText = UiText {
     glob_case: "大小",
     glob_cancel: "取消",
     glob_empty: "glob が空か空白のみです",
+    marked_label: "マーク済み",
+    toggle_collapse: "折りたたみ切替",
     mark_snapshot_read_only: " スナップショットは読み取り専用のため削除できません ",
     mark_no_destructive_keys: " 削除キーは未設定です。マーク済み項目は安全です ",
     #[cfg(feature = "trash-move")]
@@ -896,9 +926,8 @@ const JA_UI: UiText = UiText {
     scanning: "-> スキャン中 <-",
     snapshots_read_only: "スナップショットは読み取り専用です",
     traversal_running: "スキャンはすでに実行中です",
-    deleting_items: "項目を削除中...",
-    #[cfg(feature = "trash-move")]
-    trashing_items: "項目をゴミ箱へ移動中...",
+    deletion_running: "削除中のため変更できません",
+    cancelling_deletion: "削除を中止しています...",
     no_cleanup_candidates: "現在の表示にクリーンアップ候補はありません",
     cleanup_candidates_already_marked: "クリーンアップ候補はすでにマーク済みです",
     cleanup_detection_disabled: "クリーンアップ候補の検出は無効です",
@@ -927,6 +956,8 @@ const KO_UI: UiText = UiText {
     glob_case: "대소문자",
     glob_cancel: "취소",
     glob_empty: "glob이 비어 있거나 공백뿐입니다",
+    marked_label: "표시됨",
+    toggle_collapse: "접기 전환",
     mark_snapshot_read_only: " 스냅샷은 읽기 전용이므로 표시된 항목을 삭제할 수 없습니다 ",
     mark_no_destructive_keys: " 삭제 키가 지정되지 않아 표시된 항목은 안전합니다 ",
     #[cfg(feature = "trash-move")]
@@ -958,9 +989,8 @@ const KO_UI: UiText = UiText {
     scanning: "-> 스캔 중 <-",
     snapshots_read_only: "스냅샷은 읽기 전용입니다",
     traversal_running: "스캔이 이미 실행 중입니다",
-    deleting_items: "항목 삭제 중...",
-    #[cfg(feature = "trash-move")]
-    trashing_items: "항목을 휴지통으로 이동 중...",
+    deletion_running: "삭제 중에는 변경할 수 없습니다",
+    cancelling_deletion: "삭제 취소 중...",
     no_cleanup_candidates: "현재 보기에 정리 후보가 없습니다",
     cleanup_candidates_already_marked: "정리 후보가 이미 표시되어 있습니다",
     cleanup_detection_disabled: "정리 후보 감지가 비활성화되어 있습니다",
@@ -989,6 +1019,8 @@ const ZH_UI: UiText = UiText {
     glob_case: "大小写",
     glob_cancel: "取消",
     glob_empty: "glob 为空或仅包含空白",
+    marked_label: "已标记",
+    toggle_collapse: "切换折叠",
     mark_snapshot_read_only: " 快照为只读；无法删除已标记条目 ",
     mark_no_destructive_keys: " 未映射破坏性按键；已标记条目是安全的 ",
     #[cfg(feature = "trash-move")]
@@ -1020,9 +1052,8 @@ const ZH_UI: UiText = UiText {
     scanning: "-> 正在扫描 <-",
     snapshots_read_only: "快照为只读",
     traversal_running: "扫描已在进行",
-    deleting_items: "正在删除条目...",
-    #[cfg(feature = "trash-move")]
-    trashing_items: "正在将条目移至回收站...",
+    deletion_running: "正在删除，暂时无法更改",
+    cancelling_deletion: "正在取消删除...",
     no_cleanup_candidates: "当前视图中没有清理候选项",
     cleanup_candidates_already_marked: "清理候选项已标记",
     cleanup_detection_disabled: "清理候选项检测已禁用",
@@ -1051,6 +1082,8 @@ const DE_UI: UiText = UiText {
     glob_case: "case",
     glob_cancel: "cancel",
     glob_empty: "Glob ist leer oder enthält nur Leerzeichen",
+    marked_label: "Markiert",
+    toggle_collapse: "ein-/ausklappen",
     mark_snapshot_read_only: " Snapshot ist schreibgeschützt; markierte Einträge sind nicht löschbar ",
     mark_no_destructive_keys: " Keine Lösch-Tasten belegt; markierte Einträge sind sicher ",
     #[cfg(feature = "trash-move")]
@@ -1082,9 +1115,8 @@ const DE_UI: UiText = UiText {
     scanning: "-> Scan läuft <-",
     snapshots_read_only: "Snapshots sind schreibgeschützt",
     traversal_running: "Scan läuft bereits",
-    deleting_items: "Einträge werden gelöscht...",
-    #[cfg(feature = "trash-move")]
-    trashing_items: "Einträge werden in den Papierkorb verschoben...",
+    deletion_running: "Löschung läuft; Änderungen sind gesperrt",
+    cancelling_deletion: "Löschung wird abgebrochen...",
     no_cleanup_candidates: "Keine Bereinigungskandidaten in der Ansicht",
     cleanup_candidates_already_marked: "Bereinigungskandidaten sind bereits markiert",
     cleanup_detection_disabled: "Erkennung von Bereinigungskandidaten ist deaktiviert",
@@ -1195,6 +1227,25 @@ mod tests {
         assert_eq!(Language::Korean.ui_text().footer_sort_mode, "정렬");
         assert_eq!(Language::Chinese.ui_text().footer_sort_mode, "排序");
         assert_eq!(Language::German.ui_text().footer_sort_mode, "Sortierung");
+    }
+
+    #[test]
+    fn deletion_progress_includes_remaining_bytes_in_every_language() {
+        for language in [
+            Language::English,
+            Language::Japanese,
+            Language::Korean,
+            Language::Chinese,
+            Language::German,
+        ] {
+            for trash in [false, true] {
+                let progress = language.deletion_progress(42, "123 MB", trash);
+                assert!(progress.contains("42"));
+                assert!(progress.contains("123 MB"));
+            }
+            assert!(!language.ui_text().deletion_running.is_empty());
+            assert!(!language.ui_text().cancelling_deletion.is_empty());
+        }
     }
 
     #[test]

@@ -20,6 +20,121 @@ use crate::interactive::{
 };
 
 #[test]
+fn minimized_right_panes_preserve_state_and_skip_focus() -> Result<()> {
+    use crate::interactive::state::FocussedPane::{Glob, Help, Main, Mark};
+
+    let fixture = tempfile::tempdir()?;
+    let paths = [fixture.path().join("first"), fixture.path().join("second")];
+    for path in &paths {
+        fs::write(path, b"keep")?;
+    }
+    let (mut terminal, mut app) = initialized_app_and_terminal_from_paths(&paths)?;
+    app.process_events_once(&mut terminal, into_codes("x?j"))?;
+    let help_scroll = app.window.help.as_ref().unwrap().scroll;
+    assert!(help_scroll > 0);
+    assert!(app.state.focussed == Help);
+
+    app.process_events_once(&mut terminal, into_codes("]"))?;
+    assert!(
+        app.state.focussed == Main,
+        "minimizing returns focus to the list"
+    );
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(app.state.focussed == Main, "Tab skips minimized panes");
+    app.process_events_once(
+        &mut terminal,
+        into_events(
+            ['r', 't']
+                .map(|key| Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL))),
+        ),
+    )?;
+    for path in &paths {
+        assert_eq!(
+            fs::read(path)?,
+            b"keep",
+            "minimized marks cannot be deleted"
+        );
+    }
+    assert_eq!(app.window.mark.as_ref().unwrap().marked().len(), 1);
+    assert_eq!(terminal.backend().buffer()[(38, 11)].symbol(), "1");
+
+    app.process_events_once(&mut terminal, into_codes("/[abc]"))?;
+    assert!(app.state.focussed == Glob);
+    assert_eq!(app.window.glob.as_ref().unwrap().input, "[abc]");
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(app.state.focussed == Main);
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(app.state.focussed == Glob);
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Esc]))?;
+
+    app.process_events_once(&mut terminal, into_codes("x"))?;
+    assert_eq!(app.window.mark.as_ref().unwrap().marked().len(), 2);
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(
+        app.state.focussed == Main,
+        "adding marks keeps the sidebar minimized"
+    );
+    assert_eq!(terminal.backend().buffer()[(38, 11)].symbol(), "2");
+    app.process_events_once(&mut terminal, into_codes("?"))?;
+    assert!(app.state.focussed == Help);
+    assert_eq!(app.window.help.as_ref().unwrap().scroll, help_scroll);
+
+    app.process_events_once(&mut terminal, into_codes("]]"))?;
+    assert!(app.state.focussed == Main, "restoring does not move focus");
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab, KeyCode::Tab]))?;
+    assert!(app.state.focussed == Mark);
+    assert!(app.window.mark.as_ref().unwrap().has_focus());
+    app.process_events_once(&mut terminal, into_codes("]"))?;
+    assert!(app.state.focussed == Main);
+    assert!(!app.window.mark.as_ref().unwrap().has_focus());
+    assert_eq!(app.window.mark.as_ref().unwrap().marked().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn right_pane_toggle_handles_remapping_disabling_and_empty_panes() -> Result<()> {
+    use crate::interactive::state::FocussedPane::{Help, Main};
+
+    let (mut terminal, mut app) = initialized_app_and_terminal_from_fixture(&["sample-02"])?;
+    app.process_events_once(&mut terminal, into_codes("]"))?;
+    app.process_events_once(&mut terminal, into_codes("x"))?;
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(
+        app.window.mark.as_ref().unwrap().has_focus(),
+        "empty toggle has no effect"
+    );
+    app.process_events_once(&mut terminal, into_codes("]"))?;
+    app.process_events_once(&mut terminal, into_codes("a"))?;
+    assert!(app.window.mark.is_none());
+    app.process_events_once(&mut terminal, into_codes("]x"))?;
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(
+        app.state.focussed == Main,
+        "empty panes retain the minimized preference"
+    );
+
+    app.config.keys = toml::from_str::<dua::Config>("[keys]\ntoggle_right_panes = 'z'\n")?.keys;
+    app.process_events_once(&mut terminal, into_codes("]"))?;
+    app.process_events_once(&mut terminal, into_keys([KeyCode::Tab]))?;
+    assert!(
+        app.state.focussed == Main,
+        "remapping replaces the default binding"
+    );
+    app.process_events_once(&mut terminal, into_codes("z?"))?;
+    assert!(app.state.focussed == Help);
+    app.process_events_once(&mut terminal, into_codes("z"))?;
+    assert!(app.state.focussed == Main);
+
+    app.config.keys = toml::from_str::<dua::Config>("[keys]\ntoggle_right_panes = []\n")?.keys;
+    app.process_events_once(&mut terminal, into_codes("?]"))?;
+    assert!(
+        app.state.focussed == Help,
+        "disabled binding does not minimize"
+    );
+    Ok(())
+}
+
+#[test]
 fn init_from_pdu_results() -> Result<()> {
     use crate::interactive::app::tests::utils::new_test_terminal;
     let _terminal = new_test_terminal()?;
@@ -609,6 +724,66 @@ fn once_finishes_traversal_without_user_events() -> Result<()> {
         "once mode should stop after traversal completes"
     );
 
+    Ok(())
+}
+
+#[test]
+fn scanning_redraws_while_waiting_for_filesystem_events() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+    let (_scan_sender, scan_receiver) = crossbeam::channel::bounded(0);
+    let active = &mut app.state.scan.as_mut().unwrap().active_traversal;
+    active.event_rx = scan_receiver;
+    active.stats.entries_traversed = 42;
+    let visible = app.traversal.tree.add_child(
+        app.traversal.root_index,
+        "visible",
+        dua::traverse::EntryData {
+            size: 42,
+            ..Default::default()
+        },
+    );
+    let before = terminal.backend().buffer().clone();
+
+    // A focus event does not redraw; it only lets a broken event loop fail instead of hanging.
+    let (wake, events) = crossbeam::channel::bounded(0);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(5));
+        let _ = wake.send(Event::FocusGained);
+    });
+    app.state.process_event(
+        &mut app.window,
+        &mut app.traversal,
+        &mut app.display,
+        &mut terminal,
+        &events,
+        &app.config,
+    )?;
+
+    assert!(app.state.scan.is_some(), "the scan is still running");
+    assert!(!app.state.received_events, "no user interaction is needed");
+    assert_eq!(app.state.stats.entries_traversed, 42);
+    assert_eq!(app.state.entries[0].index, visible);
+    assert_ne!(terminal.backend().buffer(), &before);
+    Ok(())
+}
+
+#[test]
+fn disconnected_traversal_reports_an_error_instead_of_waiting_forever() -> Result<()> {
+    let (mut terminal, mut app) = untraversed_app_and_terminal_from_fixture(&["sample-01"])?;
+    app.traverse()?;
+    let (sender, receiver) = crossbeam::channel::bounded(0);
+    drop(sender);
+    app.state.scan.as_mut().unwrap().active_traversal.event_rx = receiver;
+
+    let Err(error) = app.process_events_once(&mut terminal, into_events([])) else {
+        panic!("a disconnected traversal must report an error");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Filesystem traversal stopped unexpectedly")
+    );
     Ok(())
 }
 
