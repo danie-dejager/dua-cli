@@ -1,5 +1,5 @@
 %define name dua
-%define version 2.44.0
+%define version 2.45.0
 %define release 1%{?dist}
 
 Summary: View disk space usage and delete unwanted data, fast.
@@ -73,33 +73,34 @@ install -D -m 644 completions/dua.fish %{buildroot}%{_datadir}/fish/vendor_compl
 %{_datadir}/fish/vendor_completions.d/dua.fish
 
 %changelog
-* Mon Aug 31 2026 - Danie de Jager - 3.44.0-1
-* Wed Aug 26 2026 - Danie de Jager - 3.43.0-1
-* Mon Aug 17 2026 - Danie de Jager - 3.42.1-1
-* Wed Aug 05 2026 - Danie de Jager - 3.41.1-1
-* Tue Aug 04 2026 - Danie de Jager - 3.41.0-1
-* Mon Aug 03 2026 - Danie de Jager - 3.40.1-1
-* Thu Jul 30 2026 - Danie de Jager - 3.39.1-1
-* Tue Jul 28 2026 - Danie de Jager - 3.39.0-1
-* Mon Jul 20 2026 - Danie de Jager - 3.38.1-1
-* Wed Jul 15 2026 - Danie de Jager - 3.38.0-1
-* Mon Jul 13 2026 - Danie de Jager - 3.37.1-1
-* Wed Jun 24 2026 - Danie de Jager - 3.37.0-1
-* Wed Jun 17 2026 - Danie de Jager - 3.36.0-1
-* Wed Jun 17 2026 - Danie de Jager - 3.35.0-1
-* Thu Jun 11 2026 - Danie de Jager - 3.34.0-3
-* Wed Apr 15 2026 - Danie de Jager - 3.34.0-2
-* Sat Feb 21 2026 - Danie de Jager - 3.34.0-1
-* Tue Jan 6 2026 - Danie de Jager - 3.33.0-1
-* Fri Dec 5 2025 - Danie de Jager - 3.32.2-2
-* Tue Oct 28 2025 - Danie de Jager - 3.32.2-1
-* Mon Sep 15 2025 - Danie de Jager - 3.32.0-1
-* Sun Sep 14 2025 - Danie de Jager - 3.31.0-2
-* Wed Aug 6 2025 - Danie de Jager - 3.31.0-1
-* Sat Jul 26 2025 - Danie de Jager - 3.30.1-2
-* Sun May 11 2025 - Danie de Jager - 3.30.1-1
-* Wed Feb 26 2025 - Danie de Jager - 3.30.0-2
-* Tue Jan 28 2025 - Danie de Jager - 3.30.0-1
+* Sun Sep 13 2026 - Danie de Jager - 2.45.0-1
+* Mon Aug 31 2026 - Danie de Jager - 2.44.0-1
+* Wed Aug 26 2026 - Danie de Jager - 2.43.0-1
+* Mon Aug 17 2026 - Danie de Jager - 2.42.1-1
+* Wed Aug 05 2026 - Danie de Jager - 2.41.1-1
+* Tue Aug 04 2026 - Danie de Jager - 2.41.0-1
+* Mon Aug 03 2026 - Danie de Jager - 2.40.1-1
+* Thu Jul 30 2026 - Danie de Jager - 2.39.1-1
+* Tue Jul 28 2026 - Danie de Jager - 2.39.0-1
+* Mon Jul 20 2026 - Danie de Jager - 2.38.1-1
+* Wed Jul 15 2026 - Danie de Jager - 2.38.0-1
+* Mon Jul 13 2026 - Danie de Jager - 2.37.1-1
+* Wed Jun 24 2026 - Danie de Jager - 2.37.0-1
+* Wed Jun 17 2026 - Danie de Jager - 2.36.0-1
+* Wed Jun 17 2026 - Danie de Jager - 2.35.0-1
+* Thu Jun 11 2026 - Danie de Jager - 2.34.0-3
+* Wed Apr 15 2026 - Danie de Jager - 2.34.0-2
+* Sat Feb 21 2026 - Danie de Jager - 2.34.0-1
+* Tue Jan 6 2026 - Danie de Jager - 2.33.0-1
+* Fri Dec 5 2025 - Danie de Jager - 2.32.2-2
+* Tue Oct 28 2025 - Danie de Jager - 2.32.2-1
+* Mon Sep 15 2025 - Danie de Jager - 2.32.0-1
+* Sun Sep 14 2025 - Danie de Jager - 2.31.0-2
+* Wed Aug 6 2025 - Danie de Jager - 2.31.0-1
+* Sat Jul 26 2025 - Danie de Jager - 2.30.1-2
+* Sun May 11 2025 - Danie de Jager - 2.30.1-1
+* Wed Feb 26 2025 - Danie de Jager - 2.30.0-2
+* Tue Jan 28 2025 - Danie de Jager - 2.30.0-1
 * Fri Dec 27 2024 - Danie de Jager - 2.29.4-2
 * Sun Nov 3 2024 - Danie de Jager - 2.29.4-1
 * Thu Sep 12 2024 Danie de Jager - 2.29.2-2
