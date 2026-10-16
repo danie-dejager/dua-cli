@@ -29,7 +29,7 @@ fn_params_excessive_bools = "allow"
 
 [package]
 name = "dua-cli"
-version = "2.45.1"
+version = "2.46.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -57,7 +57,7 @@ tui-crossplatform = [
 trash-move = ["trash"]
 
 [dependencies]
-dua-core = { path = "crates/dua-lib", version = "^4.0.0" }
+dua-core = { path = "crates/dua-lib", version = "^5.0.0" }
 clap = { version = "4.0.29", features = ["derive", "env"] }
 clap_complete = "4.5.54"
 byte-unit = { version = "5.2.5", features = ["u128"] }

@@ -855,6 +855,8 @@ mod tests {
             "the cloned fixture must own separately allocated resource-fork blocks"
         );
 
+        let mut metadata_options = crate::TraversalOptions::default();
+        metadata_options.apfs_clone_metadata = true;
         let directory_root = || vec![directory.path().to_owned()];
         for (case, roots, apparent_size_requested, count_hard_links, expected_total) in [
             (
@@ -917,10 +919,7 @@ mod tests {
                     cross_filesystems: true,
                     ignore_dirs: std::collections::BTreeSet::default(),
                     ignore_patterns: None,
-                    metadata_options: crate::TraversalOptions {
-                        skip_metadata: false,
-                        apfs_clone_metadata: true,
-                    },
+                    metadata_options,
                     base_dir: None,
                 },
                 true,
@@ -938,16 +937,10 @@ mod tests {
             );
         }
 
-        let entries = dua_core::read_dir(
-            directory.path(),
-            dua_core::Options {
-                skip_metadata: false,
-                apfs_clone_metadata: true,
-            },
-        )
-        .unwrap()
-        .collect::<std::io::Result<Vec<_>>>()
-        .unwrap();
+        let entries = dua_core::read_dir(directory.path(), metadata_options)
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
         let mut output = Vec::new();
         let (result, _) = aggregate_entries(
             (&mut output, false),
@@ -959,10 +952,7 @@ mod tests {
                 cross_filesystems: false,
                 ignore_dirs: std::collections::BTreeSet::default(),
                 ignore_patterns: None,
-                metadata_options: crate::TraversalOptions {
-                    skip_metadata: false,
-                    apfs_clone_metadata: true,
-                },
+                metadata_options,
                 base_dir: None,
             },
             true,
