@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 3.0.1 (2026-11-09)
+
+This release fixes builds for free-desktop/linux, which is `not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")`
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 1 commit contributed to the release over the course of 7 calendar days.
+ - 7 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Merge pull request #426 from Byron/api-check ([`12fa207`](https://github.com/Byron/dua-cli/commit/12fa207e8c23bf16cceff27c064d68c4a6feb3fc))
+</details>
+
 ## 3.0.0 (2026-11-02)
 
 ### Documentation (BREAKING)
@@ -3009,6 +3032,12 @@ Make `dua` less prone to hanging by ignoring certain special directories on linu
  - 2 commits contributed to the release.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 1 unique issue was worked on: [#111](https://github.com/Byron/dua-cli/issues/111)
+
+### Thanks Clippy
+
+<csr-read-only-do-not-edit/>
+
+[Clippy](https://github.com/rust-lang/rust-clippy) helped 1 time to make code idiomatic. 
 
 ### Commit Details
 
